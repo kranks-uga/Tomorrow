@@ -1,0 +1,13 @@
+[package]
+  name = "tomorrow"
+  version = "0.0.1"
+  edition = "2021"
+
+[dependencies]
+  # пока пусто
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
