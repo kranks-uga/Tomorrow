@@ -193,7 +193,8 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 unsafe { core::arch::asm!("sti"); }
             }
             if sig == b"HPET" {
-                unsafe { hpet::init_hpet(entry_addr); };
+                let hpet_base = parse_hpet(entry_addr);
+                unsafe { hpet::init_hpet(hpet_base) };
             }
             for b in sig {
                 unsafe { CONSOLE.as_mut().unwrap().write_byte(*b); }
@@ -281,4 +282,9 @@ fn parse_madt(addr: u64) -> u64 {
         
     }
     local_apic_address as u64
+}
+
+fn parse_hpet(entry_base: u64) -> u64 {
+    let some_field = unsafe { read_unaligned((entry_base + 44) as *const u64) };
+    some_field
 }
