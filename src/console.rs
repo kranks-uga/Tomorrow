@@ -47,4 +47,23 @@ impl Console {
             self.write_byte(ch);
         }
     }
+
+    pub fn write_dec(&mut self, val: u64) {
+    if val == 0 {
+        self.write_byte(b'0');
+        return;
+    }
+    let mut buf = [0u8; 20]; // максимум 20 цифр для u64
+    let mut len = 0;
+    let mut n = val;
+    while n > 0 {
+        buf[len] = b'0' + (n % 10) as u8;
+        len += 1;
+        n /= 10;
+    }
+    // цифры записались в обратном порядке — выводим с конца
+    for i in (0..len).rev() {
+        self.write_byte(buf[i]);
+    }
+}
 }

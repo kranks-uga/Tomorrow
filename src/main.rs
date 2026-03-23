@@ -13,6 +13,7 @@ mod pic;
 mod lapic;
 mod ioapic;
 mod hpet;
+mod pmm;
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -122,8 +123,10 @@ static mut TIMER_GSI: u8 = 0;
 #[no_mangle]                                                                                                                                                                                  
 extern "C" fn timer_tick() {
     unsafe {                                                                                                                                                                                  
-        TICKS += 1;                                                                                                                                                                           
-        CONSOLE.as_mut().unwrap().write_str("T");
+        TICKS += 1;                                                                                                                                                                   
+        CONSOLE.as_mut().unwrap().write_str("T: ");
+        CONSOLE.as_mut().unwrap().write_dec(TICKS);
+        CONSOLE.as_mut().unwrap().write_str("\n");
         lapic::eoi(LAPIC_BASE);
     }
 }  
@@ -132,6 +135,9 @@ extern "C" fn timer_tick() {
 pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     let mut xsdt_addr: u64 = 0;
     let mut lapic_base: u64;
+    let mut mmap_addr: u64 = 0;
+    let mut mmap_size: u32 = 0;
+    let mut mmap_entry_size: u32 = 0;
     
     let mut ptr = (boot_info + 8) as *const Mbtag;
     loop {
@@ -139,6 +145,11 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
 
         match tag.typ {
             0 => break,
+            6 => {
+                mmap_addr = ptr as u64;
+                mmap_size = tag.size;
+                mmap_entry_size = unsafe { *((ptr as *const u8).add(8) as *const u32) };
+            }
             8 => {
                 let fb = unsafe { &*(ptr as *const MbFramebuffer) };
                 unsafe {
@@ -174,6 +185,14 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
 
     kprint!("XSDT: ");
     unsafe { CONSOLE.as_mut().unwrap().write_hex(xsdt_addr); }
+    kprint!("\n");
+
+    if mmap_addr != 0 {
+        unsafe { pmm::init(mmap_addr, mmap_size, mmap_entry_size); }
+    }
+    let page = unsafe { pmm::alloc() };
+    kprint!("PMM alloc: ");
+    unsafe { CONSOLE.as_mut().unwrap().write_hex(page); }
     kprint!("\n");
 
     // парсим XSDT

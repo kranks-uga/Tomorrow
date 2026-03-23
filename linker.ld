@@ -8,6 +8,7 @@ SECTIONS {
        Содержит: multiboot2 header, start32, start64,
                  GDT, page tables, стек */
     . = KERNEL_PHYS;
+    _kernel_start = .;
 
     .boot ALIGN(4096) : {
         KEEP(*(.text.multiboot2_header))
@@ -37,6 +38,8 @@ SECTIONS {
         *(.bss .bss.*)
         *(COMMON)
     }
+
+    _kernel_end = . - KERNEL_VIRT;
 
     /DISCARD/ : {
         *(.eh_frame)
