@@ -1,25 +1,25 @@
 #![no_std]
 #![no_main]
 
-use core::{ptr::{addr_of, read_unaligned}};
+use core::ptr::{addr_of, read_unaligned};
 
 use crate::console::Console;
 
 mod boot;
-mod font;
 mod console;
-mod idt;
-mod pic;
-mod lapic;
-mod ioapic;
+mod font;
 mod hpet;
+mod idt;
+mod ioapic;
+mod lapic;
+mod pic;
 mod pmm;
+mod vmm;
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
-
 
 #[repr(C)]
 struct Mbtag {
@@ -70,7 +70,6 @@ struct AcpiHeader {
 struct Madt {
     local_apic_address: u32,
     flags: u32,
-
 }
 
 #[repr(C, packed)]
@@ -82,8 +81,8 @@ struct MadtEntryHeader {
 #[repr(C, packed)]
 struct MadtLocalApic {
     // header уже прочитан отдельно, offset 2:
-    acpi_processor_id: u8,                                                                                                                                                                 
-    apic_id: u8,                                                                                                                                                                           
+    acpi_processor_id: u8,
+    apic_id: u8,
     flags: u32,
 }
 
@@ -95,7 +94,7 @@ struct MadtIoApic {
     global_irq_base: u32,
 }
 
-#[repr(C, packed)]                                                                                                                                                                         
+#[repr(C, packed)]
 struct MadtIso {
     bus: u8,
     source: u8,
@@ -103,10 +102,9 @@ struct MadtIso {
     flags: u16,
 }
 
-
-
 static mut CONSOLE: Option<Console> = None;
 
+#[macro_export]
 macro_rules! kprint {
     ($s:expr) => {
         unsafe {
@@ -120,16 +118,20 @@ static mut LAPIC_BASE: u64 = 0;
 static mut TICKS: u64 = 0;
 static mut TIMER_GSI: u8 = 0;
 
-#[no_mangle]                                                                                                                                                                                  
+#[no_mangle]
 extern "C" fn timer_tick() {
-    unsafe {                                                                                                                                                                                  
-        TICKS += 1;                                                                                                                                                                   
+    unsafe {
+        TICKS += 1;
         CONSOLE.as_mut().unwrap().write_str("T: ");
         CONSOLE.as_mut().unwrap().write_dec(TICKS);
-        CONSOLE.as_mut().unwrap().write_str("\n");
+        CONSOLE.as_mut().unwrap().write_str(" ");
         lapic::eoi(LAPIC_BASE);
     }
-}  
+}
+
+extern "C" {
+    static pml4: vmm::PageTable; // таблица из boot.s
+}
 
 #[no_mangle]
 pub extern "C" fn kernel_main(boot_info: u64) -> ! {
@@ -138,7 +140,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     let mut mmap_addr: u64 = 0;
     let mut mmap_size: u32 = 0;
     let mut mmap_entry_size: u32 = 0;
-    
+
     let mut ptr = (boot_info + 8) as *const Mbtag;
     loop {
         let tag = unsafe { &*(ptr as *const Mbtag) };
@@ -171,7 +173,6 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 kprint!("LAPIC enabled\n");
                 pic::disable();
                 kprint!("PIC Off\n");
-                
             }
             15 => {
                 let rsdp = unsafe { &*((ptr as *const u8).add(8) as *const Rsdp) };
@@ -184,16 +185,53 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     }
 
     kprint!("XSDT: ");
-    unsafe { CONSOLE.as_mut().unwrap().write_hex(xsdt_addr); }
+    unsafe {
+        CONSOLE.as_mut().unwrap().write_hex(xsdt_addr);
+    }
     kprint!("\n");
 
     if mmap_addr != 0 {
-        unsafe { pmm::init(mmap_addr, mmap_size, mmap_entry_size); }
+        unsafe {
+            pmm::init(mmap_addr, mmap_size, mmap_entry_size);
+        }
+    }
+    if mmap_addr != 0 {
+        unsafe {
+            pmm::init(mmap_addr, mmap_size, mmap_entry_size);
+        }
+        kprint!("mmap_addr: ");
+        unsafe {
+            CONSOLE.as_mut().unwrap().write_hex(mmap_addr);
+        }
+        kprint!("\n");
+        kprint!("mmap_size: ");
+        unsafe {
+            CONSOLE.as_mut().unwrap().write_hex(mmap_size as u64);
+        }
+        kprint!("\n");
+        kprint!("entry_size: ");
+        unsafe {
+            CONSOLE.as_mut().unwrap().write_hex(mmap_entry_size as u64);
+        }
+        kprint!("\n");
+    } else {
+        kprint!("ERROR: mmap_addr is 0!\n");
     }
     let page = unsafe { pmm::alloc() };
     kprint!("PMM alloc: ");
-    unsafe { CONSOLE.as_mut().unwrap().write_hex(page); }
-    kprint!("\n");
+    kprint!("before hex\n");
+    unsafe {
+        CONSOLE.as_mut().unwrap().write_hex(page);
+    }
+
+    unsafe {
+        let addr = &pml4 as *const _ as u64;
+    }
+    unsafe {
+        let pml4_ptr = &pml4 as *const _ as *mut vmm::PageTable;
+        (*pml4_ptr).map(0xFFFF_8000_0020_0000, 0x200000, vmm::PAGE_WRITABLE);
+    }
+    kprint!("after vmm\n");
 
     // парсим XSDT
     if xsdt_addr != 0 {
@@ -206,17 +244,23 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             let sig = unsafe { &*(entry_addr as *const [u8; 4]) };
             if sig == b"APIC" {
                 lapic_base = parse_madt(entry_addr);
-                unsafe{ LAPIC_BASE = lapic_base; }
+                unsafe {
+                    LAPIC_BASE = lapic_base;
+                }
                 lapic::enable(lapic_base);
                 ioapic::redirect(unsafe { IOAPIC_BASE }, unsafe { TIMER_GSI }, 0x20, 0);
-                unsafe { core::arch::asm!("sti"); }
+                unsafe {
+                    core::arch::asm!("sti");
+                }
             }
             if sig == b"HPET" {
                 let hpet_base = parse_hpet(entry_addr);
                 unsafe { hpet::init_hpet(hpet_base) };
             }
             for b in sig {
-                unsafe { CONSOLE.as_mut().unwrap().write_byte(*b); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_byte(*b);
+                }
             }
             kprint!(" ");
         }
@@ -233,72 +277,97 @@ fn parse_madt(addr: u64) -> u64 {
     let madt = unsafe { &*((addr + 36) as *const Madt) };
     let local_apic_address = unsafe { read_unaligned(addr_of!(madt.local_apic_address)) };
     kprint!("Local APIC Address: ");
-    unsafe { CONSOLE.as_mut().unwrap().write_hex(local_apic_address as u64); }
+    unsafe {
+        CONSOLE
+            .as_mut()
+            .unwrap()
+            .write_hex(local_apic_address as u64);
+    }
     kprint!("\n");
     let mut offset: u64 = 36 + 8; // пропускаем заголовок MADT
     while offset < length as u64 {
         let entry_ptr = (addr + offset) as *const u8;
-        let typ = unsafe { *entry_ptr }; 
+        let typ = unsafe { *entry_ptr };
         let entry_length = unsafe { *entry_ptr.add(1) };
 
         match typ {
             0 => {
                 let e = unsafe { &*(entry_ptr.add(2) as *const MadtLocalApic) };
                 let apic_id = unsafe { *addr_of!(e.apic_id) };
-                let flags   = unsafe { read_unaligned(addr_of!(e.flags)) };
+                let flags = unsafe { read_unaligned(addr_of!(e.flags)) };
                 kprint!("CPU apic_id=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(apic_id as u64); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(apic_id as u64);
+                }
                 kprint!(" flags=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(flags as u64); } 
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(flags as u64);
+                }
                 kprint!("\n");
             }
 
             1 => {
                 let e = unsafe { &*(entry_ptr.add(2) as *const MadtIoApic) };
-                let io_apic_id= unsafe { *addr_of!(e.io_apic_id) };                                                                                                                                  
-                let io_apic_address = unsafe { read_unaligned(addr_of!(e.io_apic_address)) };                                                                                                              
+                let io_apic_id = unsafe { *addr_of!(e.io_apic_id) };
+                let io_apic_address = unsafe { read_unaligned(addr_of!(e.io_apic_address)) };
                 let global_irq_base = unsafe { read_unaligned(addr_of!(e.global_irq_base)) };
 
                 if global_irq_base == 0 {
-                    unsafe { IOAPIC_BASE = io_apic_address as u64; }
+                    unsafe {
+                        IOAPIC_BASE = io_apic_address as u64;
+                    }
                 }
 
                 kprint!("IO APIC id=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(io_apic_id as u64);}
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(io_apic_id as u64);
+                }
                 kprint!(" address=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(io_apic_address as u64); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(io_apic_address as u64);
+                }
                 kprint!(" global_irq_base=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(global_irq_base as u64); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(global_irq_base as u64);
+                }
                 kprint!("\n");
             }
 
             2 => {
-                let e = unsafe{ &*(entry_ptr.add(2) as *const MadtIso) };
+                let e = unsafe { &*(entry_ptr.add(2) as *const MadtIso) };
                 let bus = unsafe { *addr_of!(e.bus) };
                 let source = unsafe { *addr_of!(e.source) };
                 let gsi = unsafe { read_unaligned(addr_of!(e.global_system_interrupt)) };
                 let flags = unsafe { read_unaligned(addr_of!(e.flags)) };
 
                 if source == 0 {
-                    unsafe { TIMER_GSI = gsi as u8; }
+                    unsafe {
+                        TIMER_GSI = gsi as u8;
+                    }
                 }
                 kprint!("Interrupt Source Override bus=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(bus as u64); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(bus as u64);
+                }
                 kprint!(" source=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(source as u64); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(source as u64);
+                }
                 kprint!(" gsi=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(gsi as u64); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(gsi as u64);
+                }
                 kprint!(" flags=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(flags as u64); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(flags as u64);
+                }
                 kprint!("\n");
             }
 
             _ => {}
-
         }
 
         offset += entry_length as u64;
-        
     }
     local_apic_address as u64
 }

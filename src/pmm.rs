@@ -1,17 +1,19 @@
+use crate::CONSOLE;
+
 #[repr(C)]
-struct MbMemoryMap { 
+struct MbMemoryMap {
     typ: u32,
     size: u32,
     entry_size: u32,
-    entry_version: u32 
+    entry_version: u32,
 }
 
 #[repr(C)]
-struct MbMemoryEntry { 
-    base_addr: u64, 
-    length: u64, 
-    typ: u32, 
-    reserved: u32 
+struct MbMemoryEntry {
+    base_addr: u64,
+    length: u64,
+    typ: u32,
+    reserved: u32,
 }
 
 static mut BITMAP: [u64; 32768] = [0xFFFFFFFFFFFFFFFF; 32768]; // все заняты
@@ -21,19 +23,23 @@ static mut TOTAL_PAGES: usize = 0;
 pub unsafe fn init(mmap_addr: u64, mmap_size: u32, entry_size: u32) {
     let mut offset = 0u32;
     let entries_start = mmap_addr + 16; // пропускаем typ+size+entry_size+entry_version
-    let entries_len = mmap_size - 16; 
+    let entries_len = mmap_size - 16;
+
     while offset < entries_len {
         let enteny = &*((entries_start + offset as u64) as *const MbMemoryEntry);
         if enteny.typ == 1 {
-          let mut addr = enteny.base_addr;
-          while addr + 4096 <= enteny.base_addr + enteny.length {
-              mark_free(addr);
-              addr += 4096;
-          }  
+            let mut addr = enteny.base_addr;
+            // пропускаем нулевую страницу — адрес 0 зарезервирован
+            if addr == 0 {
+                addr = 4096;
+            }
+            while addr + 4096 <= enteny.base_addr + enteny.length {
+                mark_free(addr);
+                addr += 4096;
+            }
         }
         offset += entry_size;
     }
-
 }
 
 pub unsafe fn alloc() -> u64 {
@@ -46,7 +52,7 @@ pub unsafe fn alloc() -> u64 {
             return addr;
         }
     }
-    0 // нет свободных страниц
+    panic!("PMM: out of memory");
 }
 
 fn mark_free(addr: u64) {
@@ -57,7 +63,9 @@ fn mark_free(addr: u64) {
     if idx >= 32768 {
         return;
     }
-    unsafe { BITMAP[idx] &= !(1u64 << bit); }
+    unsafe {
+        BITMAP[idx] &= !(1u64 << bit);
+    }
 }
 
 fn mark_used(addr: u64) {
@@ -67,6 +75,7 @@ fn mark_used(addr: u64) {
     if idx >= 32768 {
         return;
     }
-    unsafe { BITMAP[idx] |= 1u64 << bit; }
+    unsafe {
+        BITMAP[idx] |= 1u64 << bit;
+    }
 }
-

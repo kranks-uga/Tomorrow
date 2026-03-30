@@ -196,6 +196,7 @@ gdt64_ptr:
    ============================================================ */
 .section .bss.boot
 .align 4096
+.global pml4
 pml4:       .space 4096
 pdpt0:      .space 4096     /* identity 0-512GB */
 pdpt1:      .space 4096     /* identity 512GB-1TB */
