@@ -14,6 +14,7 @@ mod ioapic;
 mod lapic;
 mod pic;
 mod pmm;
+mod syscall;
 mod vmm;
 
 #[panic_handler]
@@ -202,6 +203,10 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
         (*pml4_ptr).map(0xFFFF_8000_0020_0000, 0x200000, vmm::PAGE_WRITABLE);
     }
     kprint!("VMM ok\n");
+
+    //SYSCALL
+    syscall::init();
+    kprint!("Syscall ok\n");
 
     // ACPI
     if xsdt_addr != 0 {
