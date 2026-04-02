@@ -1,3 +1,5 @@
+//authors: Kirill Repin, Denis Ansuk, Rusina Lilianna
+
 #![no_std]
 #![no_main]
 
@@ -14,6 +16,7 @@ mod ioapic;
 mod lapic;
 mod pic;
 mod pmm;
+mod process;
 mod syscall;
 mod vmm;
 
@@ -207,6 +210,10 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     //SYSCALL
     syscall::init();
     kprint!("Syscall ok\n");
+
+    //PROCESS
+    let proc = process::Process::new(0, 0b11, 0);
+    kprint!("Process ok\n");
 
     // ACPI
     if xsdt_addr != 0 {
