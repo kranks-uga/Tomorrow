@@ -17,6 +17,7 @@ mod lapic;
 mod pic;
 mod pmm;
 mod process;
+mod scheduler;
 mod syscall;
 mod vmm;
 
@@ -214,6 +215,12 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     //PROCESS
     let proc = process::Process::new(0, 0b11, 0);
     kprint!("Process ok\n");
+
+    //SCHEDULER
+    unsafe {
+        scheduler::SCHEDULER.add_process(proc);
+        kprint!("Scheduler ok\n");
+    }
 
     // ACPI
     if xsdt_addr != 0 {

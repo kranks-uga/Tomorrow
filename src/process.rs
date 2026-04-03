@@ -1,5 +1,6 @@
 use crate::pmm;
 
+#[derive(PartialEq)]
 pub enum ProcessState {
     Running,
     Blocked,
