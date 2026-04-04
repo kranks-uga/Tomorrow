@@ -19,6 +19,7 @@ pub struct Context {
     pub r15: u64,
     pub rip: u64, // адрес следующей инструкции
     pub rflags: u64,
+    pub cr3: u64,
 }
 
 pub struct Scheduler {
@@ -73,4 +74,8 @@ impl Scheduler {
 
         None
     }
+}
+
+extern "C" {
+    pub fn context_switch(old: *mut Context, new: *const Context);
 }

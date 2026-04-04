@@ -1,6 +1,3 @@
-use crate::kprint;
-use crate::CONSOLE;
-
 pub const PAGE_PRESENT: u64 = 1 << 0; // страница существует
 pub const PAGE_WRITABLE: u64 = 1 << 1; // можно писать
 pub const PAGE_USER: u64 = 1 << 2; // доступна из ring 3 (userspace)

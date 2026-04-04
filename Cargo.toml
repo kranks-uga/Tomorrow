@@ -1,13 +1,17 @@
 [package]
-  name = "tomorrow"
-  version = "0.0.1"
-  edition = "2021"
+name = "tomorrow"
+version = "0.0.1"
+edition = "2021"
+build = "build.rs"
 
 [dependencies]
-  # пока пусто
+# пока пусто
 
 [profile.dev]
 panic = "abort"
 
 [profile.release]
 panic = "abort"
+
+[build-dependencies]
+cc = "1.0"
