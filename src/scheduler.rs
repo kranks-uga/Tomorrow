@@ -20,6 +20,7 @@ pub struct Context {
     pub rip: u64, // адрес следующей инструкции
     pub rflags: u64,
     pub cr3: u64,
+    pub kernel_stack: u64,
 }
 
 pub struct Scheduler {

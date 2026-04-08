@@ -3,88 +3,68 @@ use core::arch::global_asm;
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
 struct IdtEntry {
-    offset_low: u16,   // биты 0-15 адреса обработчика
-    selector: u16,     // 0x0008 (code segment)
-    ist: u8,           // 0 (interrupt stack table, не используем)
-    flags: u8,         // 0x8E (present + interrupt gate + DPL=0)
-    offset_mid: u16,   // биты 16-31 адреса 
-    offset_high: u32,  // биты 32-63 адреса
-    reserved: u32,     // 0    
+    offset_low: u16,  // биты 0-15 адреса обработчика
+    selector: u16,    // 0x0008 (code segment)
+    ist: u8,          // 0 (interrupt stack table, не используем)
+    flags: u8,        // 0x8E (present + interrupt gate + DPL=0)
+    offset_mid: u16,  // биты 16-31 адреса
+    offset_high: u32, // биты 32-63 адреса
+    reserved: u32,    // 0
 }
 
-#[repr(C, packed)]                                                                                                                                                                         
+#[repr(C, packed)]
 struct IdtDescriptor {
-    limit: u16,  // размер IDT - 1 = 256*16 - 1 = 4095                                                                                                                                     
-    base: u64,   // адрес массива IDT                                                                                                                                                      
-} 
+    limit: u16, // размер IDT - 1 = 256*16 - 1 = 4095
+    base: u64,  // адрес массива IDT
+}
 
-const EMPTY_ENTRY: IdtEntry = IdtEntry {                                                                                                                                                   
-    offset_low: 0,                                                                                                                                                                         
+const EMPTY_ENTRY: IdtEntry = IdtEntry {
+    offset_low: 0,
     selector: 0,
-    ist: 0,                                                                                                                                                                                
-    flags: 0,   
-    offset_mid: 0,                                                                                                                                                                         
-    offset_high: 0,                                                                                                                                                                        
-    reserved: 0,                                                                                                                                                                           
+    ist: 0,
+    flags: 0,
+    offset_mid: 0,
+    offset_high: 0,
+    reserved: 0,
 };
 
 static mut IDT: [IdtEntry; 256] = [EMPTY_ENTRY; 256];
 
-pub fn init() { 
-    let descriptor = IdtDescriptor {                                                                                                                                                       
-        limit: (256 * 16 - 1) as u16,                                                                                                                                                      
-        base: unsafe { &IDT as *const _ as u64 },                                                                                                                                          
-    };                                                                                                                                                                                     
-    unsafe {                                                                                                                                                                               
-        core::arch::asm!("lidt [{}]", in(reg) &descriptor);                                                                                                                                
-    }                                                                                                                                                                                      
-}  
+pub fn init() {
+    // заполняем все векторы spurious_handler (iretq) — защита от необработанных IRQ
+    let handler = spurious_handler as u64;
+    for v in 0..=255u8 {
+        set_handler(v, handler);
+    }
 
-pub fn set_handler(vector: u8, handler: u64) {
-        unsafe {
-            IDT[vector as usize].offset_low  = (handler & 0xFFFF) as u16;                                                                                                                         
-            IDT[vector as usize].offset_mid  = ((handler >> 16) & 0xFFFF) as u16;                                                                                                                 
-            IDT[vector as usize].offset_high = (handler >> 32) as u32;
-            IDT[vector as usize].selector    = 0x0008;                                                                                                                                            
-            IDT[vector as usize].flags       = 0x8E;                                                                                                                                              
-            IDT[vector as usize].ist         = 0;                                                                                                                                                 
-            IDT[vector as usize].reserved    = 0;  
-        }
+    let descriptor = IdtDescriptor {
+        limit: (256 * 16 - 1) as u16,
+        base: unsafe { &IDT as *const _ as u64 },
+    };
+    unsafe {
+        core::arch::asm!("lidt [{}]", in(reg) &descriptor);
+    }
 }
 
-global_asm!(                                                                                                                                                                                  
-    ".globl spurious_handler",                                                                                                                                                                
-    "spurious_handler:",      
-    "iretq",            
-                                                                                                                                                                                                
-    ".globl timer_handler",                                                                                                                                                                   
-    "timer_handler:",                                                                                                                                                                         
-    "push rax",                                                                                                                                                                               
-    "push rcx",                                                                                                                                                                               
-    "push rdx", 
-    "push rsi",                                                                                                                                                                               
-    "push rdi",                                                                                                                                                                               
-    "push r8", 
-    "push r9",                                                                                                                                                                                
-    "push r10", 
-    "push r11",                                                                                                                                                                               
-    "call timer_tick",
-    "pop r11",        
-    "pop r10",
-    "pop r9", 
-    "pop r8",                                                                                                                                                                                 
-    "pop rdi",
-    "pop rsi",                                                                                                                                                                                
-    "pop rdx",                                                                                                                                                                                
-    "pop rcx",                                                                                                                                                                                
-    "pop rax",                                                                                                                                                                                
-    "iretq",                                                                                                                                                                                  
-);   
+pub fn set_handler(vector: u8, handler: u64) {
+    unsafe {
+        IDT[vector as usize].offset_low = (handler & 0xFFFF) as u16;
+        IDT[vector as usize].offset_mid = ((handler >> 16) & 0xFFFF) as u16;
+        IDT[vector as usize].offset_high = (handler >> 32) as u32;
+        IDT[vector as usize].selector = 0x0008;
+        IDT[vector as usize].flags = 0x8E;
+        IDT[vector as usize].ist = 0;
+        IDT[vector as usize].reserved = 0;
+    }
+}
 
- extern "C" {
-   pub  fn spurious_handler();
-} 
+global_asm!(
+    ".globl spurious_handler",
+    "spurious_handler:",
+    "iretq",
+);
 
-extern "C" {                                                                                                                                                                                  
-    pub fn timer_handler();
+extern "C" {
+    pub fn spurious_handler();
+    pub fn timer_handler_asm();
 }

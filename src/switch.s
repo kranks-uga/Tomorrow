@@ -3,14 +3,14 @@
 context_switch:
     # rdi = old: *mut Context
     # rsi = new: *const Context
-    
+
     # сохраняем old
     mov [rdi + 0x00], rax
     mov [rdi + 0x08], rbx
     mov [rdi + 0x10], rcx
     mov [rdi + 0x18], rdx
-    mov [rdi + 0x20], rsi  # осторожно — rsi это указатель на new!
-    mov [rdi + 0x28], rdi  # и rdi это указатель на old!
+    mov [rdi + 0x20], rsi
+    mov [rdi + 0x28], rdi
     mov [rdi + 0x30], rbp
     mov [rdi + 0x38], rsp
     mov [rdi + 0x40], r8
@@ -21,12 +21,21 @@ context_switch:
     mov [rdi + 0x68], r13
     mov [rdi + 0x70], r14
     mov [rdi + 0x78], r15
-    
+
+    # сохраняем rip = адрес возврата (лежит на стеке, т.к. вызваны через call)
+    mov rax, [rsp]
+    mov [rdi + 0x80], rax
+
+    # сохраняем rflags
+    pushfq
+    pop rax
+    mov [rdi + 0x88], rax
+
     # переключаем CR3
     mov rax, [rsi + 0x90]
     mov cr3, rax
-    
-    # загружаем new — порядок важен!
+
+    # загружаем new
     mov rbx, [rsi + 0x08]
     mov rcx, [rsi + 0x10]
     mov rdx, [rsi + 0x18]
@@ -40,14 +49,18 @@ context_switch:
     mov r14, [rsi + 0x70]
     mov r15, [rsi + 0x78]
     mov rsp, [rsi + 0x38]
-    
-    # rip кладём на новый стек
-    push [rsi + 0x80]
-    
-    # теперь загружаем rdi, rsi, rax — последними
+
+    # rip глубже, rflags на вершину → popfq снимет rflags, ret — rip
+    mov rax, [rsi + 0x80]
+    push rax              # rip
+    mov rax, [rsi + 0x88]
+    push rax              # rflags
+
+    # загружаем оставшиеся — rsi последним
     mov rdi, [rsi + 0x28]
     mov rax, [rsi + 0x00]
-    mov rsi, [rsi + 0x20]  # rsi последним — теряем указатель на new
-    
-    # прыгаем через ret — rip уже на стеке
+    mov rsi, [rsi + 0x20]
+
+    # восстанавливаем флаги и прыгаем
+    popfq
     ret

@@ -19,6 +19,7 @@ mod pmm;
 mod process;
 mod scheduler;
 mod syscall;
+mod tss;
 mod vmm;
 
 #[panic_handler]
@@ -121,20 +122,62 @@ static mut IOAPIC_BASE: u64 = 0;
 static mut LAPIC_BASE: u64 = 0;
 static mut TICKS: u64 = 0;
 static mut TIMER_GSI: u8 = 0;
+static mut SCHEDULER_READY: bool = false;
 
 #[no_mangle]
-extern "C" fn timer_tick() {
-    unsafe {
-        TICKS += 1;
-        CONSOLE.as_mut().unwrap().write_str("T: ");
-        CONSOLE.as_mut().unwrap().write_dec(TICKS);
-        CONSOLE.as_mut().unwrap().write_str(" ");
-        lapic::eoi(LAPIC_BASE);
+pub unsafe extern "C" fn timer_tick_switch() {
+    TICKS += 1;
+    lapic::eoi(LAPIC_BASE);
+
+    if !SCHEDULER_READY || TICKS % 50 != 0 {
+        return;
     }
+
+    let current = scheduler::SCHEDULER.current;
+    let mut next = current;
+    for i in 0..64 {
+        let idx = (current + 1 + i) % 64;
+        if let Some(p) = &scheduler::SCHEDULER.processes[idx] {
+            if p.state == process::ProcessState::Running {
+                next = idx;
+                break;
+            }
+        }
+    }
+
+    if next == current {
+        return;
+    }
+
+    let old_ctx = &mut scheduler::SCHEDULER.processes[current]
+        .as_mut().unwrap().context as *mut scheduler::Context;
+    let new_ctx = &scheduler::SCHEDULER.processes[next]
+        .as_ref().unwrap().context as *const scheduler::Context;
+
+    tss::TSS.rsp0 = scheduler::SCHEDULER.processes[next]
+        .as_ref().unwrap().kernel_stack;
+
+    scheduler::SCHEDULER.current = next;
+
+    scheduler::context_switch(old_ctx, new_ctx);
 }
 
 extern "C" {
     static pml4: vmm::PageTable;
+}
+
+extern "C" fn process_a() -> ! {
+    loop {
+        unsafe {
+            core::arch::asm!("nop");
+        }
+    }
+}
+
+extern "C" fn process_b() -> ! {
+    loop {
+        kprint!("B ");
+    }
 }
 
 #[no_mangle]
@@ -172,7 +215,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 idt::init();
                 kprint!("IDT ok\n");
                 idt::set_handler(0xFF, idt::spurious_handler as u64);
-                idt::set_handler(0x20, idt::timer_handler as u64);
+                idt::set_handler(0x20, idt::timer_handler_asm as u64);
                 pic::disable();
                 kprint!("PIC off\n");
             }
@@ -194,6 +237,13 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     }
     kprint!("PMM ok\n");
 
+    //TSS
+    let kernel_stack = unsafe { pmm::alloc() + 4096 };
+    unsafe {
+        tss::init(kernel_stack);
+    }
+    kprint!("TSS ok\n");
+
     // HEAP
     let heap_start = unsafe { pmm::alloc() };
     unsafe {
@@ -213,14 +263,8 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     kprint!("Syscall ok\n");
 
     //PROCESS
-    let proc = process::Process::new(0, 0b11, 0);
+    let proc = process::Process::new(1, 0b11, 0, 0x0);
     kprint!("Process ok\n");
-
-    //SCHEDULER
-    unsafe {
-        scheduler::SCHEDULER.add_process(proc);
-        kprint!("Scheduler ok\n");
-    }
 
     // ACPI
     if xsdt_addr != 0 {
@@ -254,6 +298,18 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             kprint!(" ");
         }
         kprint!("\n");
+    }
+
+    unsafe {
+        let proc_a = process::Process::new(1, 0b11, 0, process_a as u64);
+        let proc_b = process::Process::new(2, 0b11, 0, process_b as u64);
+        scheduler::SCHEDULER.add_process(proc_a);
+        scheduler::SCHEDULER.add_process(proc_b);
+        SCHEDULER_READY = true;
+    }
+    let mut i = 0u64;
+    while i < 1_000_000_000 {
+        i += 1;
     }
 
     loop {}
