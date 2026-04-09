@@ -124,42 +124,66 @@ static mut TICKS: u64 = 0;
 static mut TIMER_GSI: u8 = 0;
 static mut SCHEDULER_READY: bool = false;
 
+// Порядок полей должен совпадать с порядком push в timer.s
+// push: r15, r14, r13, r12, r11, r10, r9, r8, rdi, rsi, rbp, rdx, rcx, rbx, rax
+// на стеке rax лежит по наименьшему адресу
+#[repr(C)]
+struct SavedRegs {
+    rax: u64, rbx: u64, rcx: u64, rdx: u64,
+    rbp: u64, rsi: u64, rdi: u64,
+    r8: u64,  r9: u64,  r10: u64, r11: u64,
+    r12: u64, r13: u64, r14: u64, r15: u64,
+}
+
 #[no_mangle]
-pub unsafe extern "C" fn timer_tick_switch() {
+pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const scheduler::Context {
     TICKS += 1;
     lapic::eoi(LAPIC_BASE);
 
     if !SCHEDULER_READY || TICKS % 50 != 0 {
-        return;
+        return core::ptr::null();
     }
 
+    // сохраняем контекст текущего процесса
     let current = scheduler::SCHEDULER.current;
-    let mut next = current;
+    if let Some(proc) = scheduler::SCHEDULER.processes[current].as_mut() {
+        proc.context.rax = (*regs).rax;
+        proc.context.rbx = (*regs).rbx;
+        proc.context.rcx = (*regs).rcx;
+        proc.context.rdx = (*regs).rdx;
+        proc.context.rbp = (*regs).rbp;
+        proc.context.rsi = (*regs).rsi;
+        proc.context.rdi = (*regs).rdi;
+        proc.context.r8  = (*regs).r8;
+        proc.context.r9  = (*regs).r9;
+        proc.context.r10 = (*regs).r10;
+        proc.context.r11 = (*regs).r11;
+        proc.context.r12 = (*regs).r12;
+        proc.context.r13 = (*regs).r13;
+        proc.context.r14 = (*regs).r14;
+        proc.context.r15 = (*regs).r15;
+        // iretq фрейм лежит выше наших 15 push'ей = 15 * 8 = 120 байт
+        let iretq_frame = (regs as u64 + 120) as *const u64;
+        proc.context.rip    = *iretq_frame;         // offset 0
+        // offset 8  = cs (пропускаем)
+        proc.context.rflags = *iretq_frame.add(2);  // offset 16
+        proc.context.rsp    = *iretq_frame.add(3);  // offset 24
+        // offset 32 = ss (пропускаем)
+    }
+
+    // выбираем следующий процесс
     for i in 0..64 {
         let idx = (current + 1 + i) % 64;
         if let Some(p) = &scheduler::SCHEDULER.processes[idx] {
             if p.state == process::ProcessState::Running {
-                next = idx;
-                break;
+                scheduler::SCHEDULER.current = idx;
+                tss::TSS.rsp0 = p.kernel_stack;
+                return &p.context as *const _;
             }
         }
     }
 
-    if next == current {
-        return;
-    }
-
-    let old_ctx = &mut scheduler::SCHEDULER.processes[current]
-        .as_mut().unwrap().context as *mut scheduler::Context;
-    let new_ctx = &scheduler::SCHEDULER.processes[next]
-        .as_ref().unwrap().context as *const scheduler::Context;
-
-    tss::TSS.rsp0 = scheduler::SCHEDULER.processes[next]
-        .as_ref().unwrap().kernel_stack;
-
-    scheduler::SCHEDULER.current = next;
-
-    scheduler::context_switch(old_ctx, new_ctx);
+    core::ptr::null()
 }
 
 extern "C" {
@@ -168,9 +192,7 @@ extern "C" {
 
 extern "C" fn process_a() -> ! {
     loop {
-        unsafe {
-            core::arch::asm!("nop");
-        }
+        kprint!("A ");
     }
 }
 
@@ -231,24 +253,18 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
 
     // PMM
     if mmap_addr != 0 {
-        unsafe {
-            pmm::init(mmap_addr, mmap_size, mmap_entry_size);
-        }
+        unsafe { pmm::init(mmap_addr, mmap_size, mmap_entry_size); }
     }
     kprint!("PMM ok\n");
 
-    //TSS
+    // TSS
     let kernel_stack = unsafe { pmm::alloc() + 4096 };
-    unsafe {
-        tss::init(kernel_stack);
-    }
+    unsafe { tss::init(kernel_stack); }
     kprint!("TSS ok\n");
 
     // HEAP
     let heap_start = unsafe { pmm::alloc() };
-    unsafe {
-        heap::HEAP.init(heap_start, 4096 * 16);
-    }
+    unsafe { heap::HEAP.init(heap_start, 4096 * 16); }
     kprint!("HEAP ok\n");
 
     // VMM
@@ -258,13 +274,9 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     }
     kprint!("VMM ok\n");
 
-    //SYSCALL
+    // SYSCALL
     syscall::init();
     kprint!("Syscall ok\n");
-
-    //PROCESS
-    let proc = process::Process::new(1, 0b11, 0, 0x0);
-    kprint!("Process ok\n");
 
     // ACPI
     if xsdt_addr != 0 {
@@ -277,39 +289,31 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             let sig = unsafe { &*(entry_addr as *const [u8; 4]) };
             if sig == b"APIC" {
                 lapic_base = parse_madt(entry_addr);
-                unsafe {
-                    LAPIC_BASE = lapic_base;
-                }
+                unsafe { LAPIC_BASE = lapic_base; }
                 lapic::enable(lapic_base);
                 ioapic::redirect(unsafe { IOAPIC_BASE }, unsafe { TIMER_GSI }, 0x20, 0);
-                unsafe {
-                    core::arch::asm!("sti");
-                }
+                unsafe { core::arch::asm!("sti"); }
             }
             if sig == b"HPET" {
                 let hpet_base = parse_hpet(entry_addr);
                 unsafe { hpet::init_hpet(hpet_base) };
             }
             for b in sig {
-                unsafe {
-                    CONSOLE.as_mut().unwrap().write_byte(*b);
-                }
+                unsafe { CONSOLE.as_mut().unwrap().write_byte(*b); }
             }
             kprint!(" ");
         }
         kprint!("\n");
     }
 
+    // SCHEDULER
     unsafe {
         let proc_a = process::Process::new(1, 0b11, 0, process_a as u64);
         let proc_b = process::Process::new(2, 0b11, 0, process_b as u64);
         scheduler::SCHEDULER.add_process(proc_a);
         scheduler::SCHEDULER.add_process(proc_b);
+        kprint!("Scheduler ok\n");
         SCHEDULER_READY = true;
-    }
-    let mut i = 0u64;
-    while i < 1_000_000_000 {
-        i += 1;
     }
 
     loop {}
@@ -321,12 +325,7 @@ fn parse_madt(addr: u64) -> u64 {
     let madt = unsafe { &*((addr + 36) as *const Madt) };
     let local_apic_address = unsafe { read_unaligned(addr_of!(madt.local_apic_address)) };
     kprint!("Local APIC: ");
-    unsafe {
-        CONSOLE
-            .as_mut()
-            .unwrap()
-            .write_hex(local_apic_address as u64);
-    }
+    unsafe { CONSOLE.as_mut().unwrap().write_hex(local_apic_address as u64); }
     kprint!("\n");
 
     let mut offset: u64 = 36 + 8;
@@ -340,13 +339,9 @@ fn parse_madt(addr: u64) -> u64 {
                 let apic_id = unsafe { *addr_of!(e.apic_id) };
                 let flags = unsafe { read_unaligned(addr_of!(e.flags)) };
                 kprint!("CPU apic_id=");
-                unsafe {
-                    CONSOLE.as_mut().unwrap().write_hex(apic_id as u64);
-                }
+                unsafe { CONSOLE.as_mut().unwrap().write_hex(apic_id as u64); }
                 kprint!(" flags=");
-                unsafe {
-                    CONSOLE.as_mut().unwrap().write_hex(flags as u64);
-                }
+                unsafe { CONSOLE.as_mut().unwrap().write_hex(flags as u64); }
                 kprint!("\n");
             }
             1 => {
@@ -355,18 +350,12 @@ fn parse_madt(addr: u64) -> u64 {
                 let io_apic_address = unsafe { read_unaligned(addr_of!(e.io_apic_address)) };
                 let global_irq_base = unsafe { read_unaligned(addr_of!(e.global_irq_base)) };
                 if global_irq_base == 0 {
-                    unsafe {
-                        IOAPIC_BASE = io_apic_address as u64;
-                    }
+                    unsafe { IOAPIC_BASE = io_apic_address as u64; }
                 }
                 kprint!("IO APIC id=");
-                unsafe {
-                    CONSOLE.as_mut().unwrap().write_hex(io_apic_id as u64);
-                }
+                unsafe { CONSOLE.as_mut().unwrap().write_hex(io_apic_id as u64); }
                 kprint!(" addr=");
-                unsafe {
-                    CONSOLE.as_mut().unwrap().write_hex(io_apic_address as u64);
-                }
+                unsafe { CONSOLE.as_mut().unwrap().write_hex(io_apic_address as u64); }
                 kprint!("\n");
             }
             2 => {
@@ -374,9 +363,7 @@ fn parse_madt(addr: u64) -> u64 {
                 let source = unsafe { *addr_of!(e.source) };
                 let gsi = unsafe { read_unaligned(addr_of!(e.global_system_interrupt)) };
                 if source == 0 {
-                    unsafe {
-                        TIMER_GSI = gsi as u8;
-                    }
+                    unsafe { TIMER_GSI = gsi as u8; }
                 }
             }
             _ => {}

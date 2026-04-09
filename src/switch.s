@@ -1,10 +1,11 @@
 .intel_syntax noprefix
 .global context_switch
+
 context_switch:
     # rdi = old: *mut Context
     # rsi = new: *const Context
 
-    # сохраняем old
+    # сохраняем регистры old
     mov [rdi + 0x00], rax
     mov [rdi + 0x08], rbx
     mov [rdi + 0x10], rcx
@@ -22,7 +23,7 @@ context_switch:
     mov [rdi + 0x70], r14
     mov [rdi + 0x78], r15
 
-    # сохраняем rip = адрес возврата (лежит на стеке, т.к. вызваны через call)
+    # сохраняем rip (адрес возврата на стеке)
     mov rax, [rsp]
     mov [rdi + 0x80], rax
 
@@ -31,11 +32,7 @@ context_switch:
     pop rax
     mov [rdi + 0x88], rax
 
-    # переключаем CR3
-    mov rax, [rsi + 0x90]
-    mov cr3, rax
-
-    # загружаем new
+    # загружаем регистры new
     mov rbx, [rsi + 0x08]
     mov rcx, [rsi + 0x10]
     mov rdx, [rsi + 0x18]
@@ -50,17 +47,16 @@ context_switch:
     mov r15, [rsi + 0x78]
     mov rsp, [rsi + 0x38]
 
-    # rip глубже, rflags на вершину → popfq снимет rflags, ret — rip
-    mov rax, [rsi + 0x80]
-    push rax              # rip
+    # кладём rip и rflags на новый стек
     mov rax, [rsi + 0x88]
-    push rax              # rflags
+    push rax                    # rflags
+    mov rax, [rsi + 0x80]
+    push rax                    # rip
 
     # загружаем оставшиеся — rsi последним
     mov rdi, [rsi + 0x28]
     mov rax, [rsi + 0x00]
     mov rsi, [rsi + 0x20]
 
-    # восстанавливаем флаги и прыгаем
     popfq
     ret
