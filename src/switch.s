@@ -5,7 +5,7 @@ context_switch:
     # rdi = old: *mut Context
     # rsi = new: *const Context
 
-    # сохраняем регистры old
+    # --- сохраняем регистры old ---
     mov [rdi + 0x00], rax
     mov [rdi + 0x08], rbx
     mov [rdi + 0x10], rcx
@@ -13,7 +13,7 @@ context_switch:
     mov [rdi + 0x20], rsi
     mov [rdi + 0x28], rdi
     mov [rdi + 0x30], rbp
-    mov [rdi + 0x38], rsp
+    mov [rdi + 0x38], rsp   # rsp после push return addr (call instruction)
     mov [rdi + 0x40], r8
     mov [rdi + 0x48], r9
     mov [rdi + 0x50], r10
@@ -23,16 +23,16 @@ context_switch:
     mov [rdi + 0x70], r14
     mov [rdi + 0x78], r15
 
-    # сохраняем rip (адрес возврата на стеке)
+    # rip = адрес возврата (call положил его на стек)
     mov rax, [rsp]
     mov [rdi + 0x80], rax
 
-    # сохраняем rflags
+    # rflags
     pushfq
     pop rax
     mov [rdi + 0x88], rax
 
-    # загружаем регистры new
+    # --- восстанавливаем регистры new ---
     mov rbx, [rsi + 0x08]
     mov rcx, [rsi + 0x10]
     mov rdx, [rsi + 0x18]
@@ -45,18 +45,18 @@ context_switch:
     mov r13, [rsi + 0x68]
     mov r14, [rsi + 0x70]
     mov r15, [rsi + 0x78]
+
+    # ставим новый rsp — он указывает на return address нового процесса
     mov rsp, [rsi + 0x38]
 
-    # кладём rip и rflags на новый стек
+    # кладём rflags на стек (push + popfq не трогают rsp net-нулю)
     mov rax, [rsi + 0x88]
-    push rax                    # rflags
-    mov rax, [rsi + 0x80]
-    push rax                    # rip
+    push rax                # rsp -= 8
 
-    # загружаем оставшиеся — rsi последним
+    # загружаем rdi, rax, rsi последними
     mov rdi, [rsi + 0x28]
     mov rax, [rsi + 0x00]
     mov rsi, [rsi + 0x20]
 
-    popfq
-    ret
+    popfq                   # восстанавливаем rflags, rsp += 8 → снова на return addr
+    ret                     # pop return addr, rsp += 8 = исходный SP ✓

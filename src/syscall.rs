@@ -19,7 +19,7 @@ unsafe extern "C" fn handler() -> ! {
 
 pub fn init() {
     unsafe {
-        write_msr(MSR_LSTAR, handler as u64);
+        write_msr(MSR_LSTAR, handler as *const () as u64);
         write_msr(MSR_STAR, 0x0013_0008_0000_0000);
         write_msr(MSR_SYSCALL_MASK, 0x200);
     }

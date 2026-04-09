@@ -2,8 +2,7 @@
 .global timer_handler_asm
 
 timer_handler_asm:
-    # CPU положил на стек: rip, cs, rflags, rsp, ss
-    # сохраняем все регистры
+    # CPU в 64-бит всегда кладёт: rip, cs, rflags, rsp, ss
     push r15
     push r14
     push r13
@@ -18,7 +17,7 @@ timer_handler_asm:
     push rdx
     push rcx
     push rbx
-    push rax
+    push rax        # итого 15 * 8 = 120 байт, выше — iretq-фрейм
 
     mov rdi, rsp
     call timer_do_switch
@@ -26,10 +25,23 @@ timer_handler_asm:
     test rax, rax
     jz .restore
 
-    # rax = указатель на новый Context
+    # rax → Context нового процесса
     mov rbx, rax
 
-    # загружаем регистры нового процесса
+    # переходим на kernel_stack нового процесса
+    mov rsp, [rbx + 0x98]
+
+    # строим iretq-фрейм (CPU ожидает снизу вверх: ss, rsp, rflags, cs, rip)
+    push 0x10                       # SS  (kernel data)
+    mov rax, [rbx + 0x38]
+    push rax                        # RSP нового процесса
+    mov rax, [rbx + 0x88]
+    push rax                        # RFLAGS
+    push 0x08                       # CS  (kernel code)
+    mov rax, [rbx + 0x80]
+    push rax                        # RIP
+
+    # восстанавливаем регистры
     mov rax, [rbx + 0x00]
     mov rcx, [rbx + 0x10]
     mov rdx, [rbx + 0x18]
@@ -44,19 +56,9 @@ timer_handler_asm:
     mov r13, [rbx + 0x68]
     mov r14, [rbx + 0x70]
     mov r15, [rbx + 0x78]
-
-    # переключаем стек на kernel stack нового процесса
-    mov rsp, [rbx + 0x98]
-
-    # кладём rip на стек и прыгаем через ret
-    mov rcx, [rbx + 0x80]
-    push rcx
-
-    # загружаем rcx и rbx последними
-    mov rcx, [rbx + 0x10]
     mov rbx, [rbx + 0x08]
 
-    ret
+    iretq
 
 .restore:
     pop rax

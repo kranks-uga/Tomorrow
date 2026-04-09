@@ -57,25 +57,27 @@ struct GdtPtr {
 }
 
 pub unsafe fn init(kernel_stack: u64) {
-    TSS.rsp0 = kernel_stack;
-    TSS.iomap_base = core::mem::size_of::<Tss>() as u16;
+    let tss = &raw mut TSS;
+    (*tss).rsp0 = kernel_stack;
+    (*tss).iomap_base = core::mem::size_of::<Tss>() as u16;
 
     // вычисляем дескриптор TSS
-    let base = &TSS as *const Tss as u64;
+    let base = &raw const TSS as u64;
     let limit = core::mem::size_of::<Tss>() as u64 - 1;
 
     // TSS дескриптор — 16 байт (два слота GDT)
-    GDT[3] = (limit & 0xFFFF)
+    let gdt = &raw mut GDT;
+    (*gdt)[3] = (limit & 0xFFFF)
         | ((base & 0xFFFFFF) << 16)
         | (0x89u64 << 40)        // Present + TSS type
         | (((limit >> 16) & 0xF) << 48)
         | (((base >> 24) & 0xFF) << 56);
-    GDT[4] = (base >> 32) & 0xFFFFFFFF;
+    (*gdt)[4] = (base >> 32) & 0xFFFFFFFF;
 
     // загружаем новый GDT
     let gdt_ptr = GdtPtr {
         limit: (core::mem::size_of::<[u64; 5]>() - 1) as u16,
-        base: GDT.as_ptr() as u64,
+        base: core::ptr::addr_of!(GDT) as u64,
     };
     core::arch::asm!("lgdt [{}]", in(reg) &gdt_ptr);
 

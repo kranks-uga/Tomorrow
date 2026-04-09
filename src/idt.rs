@@ -32,14 +32,14 @@ static mut IDT: [IdtEntry; 256] = [EMPTY_ENTRY; 256];
 
 pub fn init() {
     // заполняем все векторы spurious_handler (iretq) — защита от необработанных IRQ
-    let handler = spurious_handler as u64;
+    let handler = spurious_handler as *const () as u64;
     for v in 0..=255u8 {
         set_handler(v, handler);
     }
 
     let descriptor = IdtDescriptor {
         limit: (256 * 16 - 1) as u16,
-        base: unsafe { &IDT as *const _ as u64 },
+        base: unsafe { core::ptr::addr_of!(IDT) as u64 },
     };
     unsafe {
         core::arch::asm!("lidt [{}]", in(reg) &descriptor);
@@ -48,13 +48,14 @@ pub fn init() {
 
 pub fn set_handler(vector: u8, handler: u64) {
     unsafe {
-        IDT[vector as usize].offset_low = (handler & 0xFFFF) as u16;
-        IDT[vector as usize].offset_mid = ((handler >> 16) & 0xFFFF) as u16;
-        IDT[vector as usize].offset_high = (handler >> 32) as u32;
-        IDT[vector as usize].selector = 0x0008;
-        IDT[vector as usize].flags = 0x8E;
-        IDT[vector as usize].ist = 0;
-        IDT[vector as usize].reserved = 0;
+        let entry = &raw mut IDT[vector as usize];
+        (*entry).offset_low = (handler & 0xFFFF) as u16;
+        (*entry).offset_mid = ((handler >> 16) & 0xFFFF) as u16;
+        (*entry).offset_high = (handler >> 32) as u32;
+        (*entry).selector = 0x0008;
+        (*entry).flags = 0x8E;
+        (*entry).ist = 0;
+        (*entry).reserved = 0;
     }
 }
 

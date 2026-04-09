@@ -1,11 +1,6 @@
-use crate::CONSOLE;
-
-#[repr(C)]
-struct MbMemoryMap {
-    typ: u32,
-    size: u32,
-    entry_size: u32,
-    entry_version: u32,
+unsafe extern "C" {
+    static _kernel_start: u8;
+    static _kernel_end: u8;
 }
 
 #[repr(C)]
@@ -18,27 +13,38 @@ struct MbMemoryEntry {
 
 static mut BITMAP: [u64; 32768] = [0xFFFFFFFFFFFFFFFF; 32768]; // все заняты
 
-static mut TOTAL_PAGES: usize = 0;
-
 pub unsafe fn init(mmap_addr: u64, mmap_size: u32, entry_size: u32) {
     let mut offset = 0u32;
     let entries_start = mmap_addr + 16; // пропускаем typ+size+entry_size+entry_version
     let entries_len = mmap_size - 16;
 
+    // Шаг 1: пометить свободные страницы из multiboot2 memory map
     while offset < entries_len {
-        let enteny = &*((entries_start + offset as u64) as *const MbMemoryEntry);
-        if enteny.typ == 1 {
-            let mut addr = enteny.base_addr;
-            // пропускаем нулевую страницу — адрес 0 зарезервирован
+        let entry = &*((entries_start + offset as u64) as *const MbMemoryEntry);
+        if entry.typ == 1 {
+            let mut addr = entry.base_addr;
+            // пропускаем нулевую страницу — зарезервирована
             if addr == 0 {
                 addr = 4096;
             }
-            while addr + 4096 <= enteny.base_addr + enteny.length {
+            while addr + 4096 <= entry.base_addr + entry.length {
                 mark_free(addr);
                 addr += 4096;
             }
         }
         offset += entry_size;
+    }
+
+    // Шаг 2: пометить страницы ядра как занятые
+    // _kernel_start и _kernel_end — физические адреса из linker.ld
+    let kstart = core::ptr::addr_of!(_kernel_start) as u64;
+    let kend   = core::ptr::addr_of!(_kernel_end)   as u64;
+    let page_start = kstart & !0xFFF;
+    let page_end   = (kend + 0xFFF) & !0xFFF;
+    let mut addr = page_start;
+    while addr < page_end {
+        mark_used(addr);
+        addr += 4096;
     }
 }
 
@@ -59,7 +65,6 @@ fn mark_free(addr: u64) {
     let page = (addr / 4096) as usize;
     let idx = page / 64;
     let bit = page % 64;
-    // Добавь проверку границы!
     if idx >= 32768 {
         return;
     }

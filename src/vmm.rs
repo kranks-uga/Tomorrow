@@ -37,7 +37,6 @@ impl PageTable {
 
         let pdpt = ((*pml4_entry) & 0x000FFFFF_FFFFF000) as *mut PageTable;
         let pdpt_entry = &mut (*pdpt).entries[pdpt_idx as usize];
-        let pdpt = ((*pml4_entry) & 0x000FFFFF_FFFFF000) as *mut PageTable;
         if *pdpt_entry & PAGE_PRESENT == 0 {
             let new_table = PageTable::new();
             *pdpt_entry = new_table as u64 | PAGE_PRESENT | PAGE_WRITABLE;
@@ -45,7 +44,6 @@ impl PageTable {
 
         let pd = ((*pdpt_entry) & 0x000FFFFF_FFFFF000) as *mut PageTable;
         let pd_entry = &mut (*pd).entries[pd_idx as usize];
-        let pd = ((*pdpt_entry) & 0x000FFFFF_FFFFF000) as *mut PageTable;
         if *pd_entry & PAGE_PRESENT == 0 {
             let new_table = PageTable::new();
             *pd_entry = new_table as u64 | PAGE_PRESENT | PAGE_WRITABLE;

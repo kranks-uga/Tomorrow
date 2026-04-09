@@ -1,7 +1,7 @@
-use crate::font::{draw_char, GLYPH_W, GLYPH_H};                                                                                                                                            
-                                                                                                                                                                                             
-pub struct Console {                                                                                                                                                                       
-    pub fb: *mut u32,                                                                                                                                                                      
+use crate::font::{draw_char, GLYPH_W, GLYPH_H};
+
+pub struct Console {
+    pub fb: *mut u32,
     pub pitch: u32,
     pub width: u32,
     pub height: u32,
@@ -13,6 +13,7 @@ unsafe impl Send for Console {}
 
 impl Console {
     pub fn write_byte(&mut self, b: u8) {
+        let max_rows = self.height / GLYPH_H;
         match b {
             b'\n' => {
                 self.cx = 0;
@@ -27,6 +28,9 @@ impl Console {
                 }
             }
         }
+        if self.cy >= max_rows {
+            self.clear();
+        }
     }
 
     pub fn write_str(&mut self, s: &str) {
@@ -34,12 +38,16 @@ impl Console {
             self.write_byte(b);
         }
     }
-    pub fn clear(&mut self) {                                                                                                                                                                  
+
+    pub fn clear(&mut self) {
         let pixels = self.pitch / 4 * self.height;
         for i in 0..pixels {
             unsafe { *self.fb.add(i as usize) = 0x000000; }
         }
+        self.cx = 0;
+        self.cy = 0;
     }
+
     pub fn write_hex(&mut self, val: u64) {
         for i in (0..16).rev() {
             let nibble = (val >> (i * 4)) & 0xF;
@@ -49,21 +57,20 @@ impl Console {
     }
 
     pub fn write_dec(&mut self, val: u64) {
-    if val == 0 {
-        self.write_byte(b'0');
-        return;
+        if val == 0 {
+            self.write_byte(b'0');
+            return;
+        }
+        let mut buf = [0u8; 20];
+        let mut len = 0;
+        let mut n = val;
+        while n > 0 {
+            buf[len] = b'0' + (n % 10) as u8;
+            len += 1;
+            n /= 10;
+        }
+        for i in (0..len).rev() {
+            self.write_byte(buf[i]);
+        }
     }
-    let mut buf = [0u8; 20]; // максимум 20 цифр для u64
-    let mut len = 0;
-    let mut n = val;
-    while n > 0 {
-        buf[len] = b'0' + (n % 10) as u8;
-        len += 1;
-        n /= 10;
-    }
-    // цифры записались в обратном порядке — выводим с конца
-    for i in (0..len).rev() {
-        self.write_byte(buf[i]);
-    }
-}
 }

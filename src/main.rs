@@ -113,7 +113,7 @@ static mut CONSOLE: Option<Console> = None;
 macro_rules! kprint {
     ($s:expr) => {
         unsafe {
-            CONSOLE.as_mut().unwrap().write_str($s);
+            (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_str($s);
         }
     };
 }
@@ -166,17 +166,19 @@ pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const schedul
         proc.context.rbp = (*regs).rbp;
         proc.context.rsi = (*regs).rsi;
         proc.context.rdi = (*regs).rdi;
-        proc.context.r8 = (*regs).r8;
-        proc.context.r9 = (*regs).r9;
+        proc.context.r8  = (*regs).r8;
+        proc.context.r9  = (*regs).r9;
         proc.context.r10 = (*regs).r10;
         proc.context.r11 = (*regs).r11;
         proc.context.r12 = (*regs).r12;
         proc.context.r13 = (*regs).r13;
         proc.context.r14 = (*regs).r14;
         proc.context.r15 = (*regs).r15;
-        let iretq_frame = (regs as u64 + 120) as *const u64;
-        let iretq_frame = (regs as u64 + 120) as *const u64;
-        proc.context.rip = *iretq_frame;
+        // iretq-фрейм CPU: [rip, cs, rflags, rsp, ss] — сразу над 15 push'ами (15*8=120)
+        let iretq = (regs as u64 + 120) as *const u64;
+        proc.context.rip    = *iretq.add(0); // rip
+        proc.context.rflags = *iretq.add(2); // rflags
+        proc.context.rsp    = *iretq.add(3); // rsp (стек прерванного процесса)
     }
 
     // выбираем следующий процесс
@@ -185,8 +187,7 @@ pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const schedul
         if let Some(p) = &scheduler::SCHEDULER.processes[idx] {
             if p.state == process::ProcessState::Running {
                 scheduler::SCHEDULER.current = idx;
-                tss::TSS.rsp0 = p.kernel_stack;
-                CONSOLE.as_mut().unwrap().write_dec(idx as u64);
+                (&raw mut tss::TSS).as_mut().unwrap().rsp0 = p.kernel_stack;
                 return &p.context as *const _;
             }
         }
@@ -201,25 +202,13 @@ extern "C" {
 
 extern "C" fn process_a() -> ! {
     loop {
-        kprint!("A ");
-        unsafe {
-            let old = &mut scheduler::SCHEDULER.processes[0].as_mut().unwrap().context as *mut _;
-            let new = &scheduler::SCHEDULER.processes[1].as_ref().unwrap().context as *const _;
-            scheduler::SCHEDULER.current = 1;
-            scheduler::context_switch(old, new);
-        }
+        kprint!("A");
     }
 }
 
 extern "C" fn process_b() -> ! {
     loop {
-        kprint!("B ");
-        unsafe {
-            let old = &mut scheduler::SCHEDULER.processes[1].as_mut().unwrap().context as *mut _;
-            let new = &scheduler::SCHEDULER.processes[0].as_ref().unwrap().context as *const _;
-            scheduler::SCHEDULER.current = 0;
-            scheduler::context_switch(old, new);
-        }
+        kprint!("B");
     }
 }
 
@@ -252,13 +241,13 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                         cx: 0,
                         cy: 0,
                     });
-                    CONSOLE.as_mut().unwrap().clear();
+                    (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().clear();
                 }
                 kprint!("Tomorrow OS\n");
                 idt::init();
                 kprint!("IDT ok\n");
-                idt::set_handler(0xFF, idt::spurious_handler as u64);
-                idt::set_handler(0x20, idt::timer_handler_asm as u64);
+                idt::set_handler(0xFF, idt::spurious_handler as *const () as u64);
+                idt::set_handler(0x20, idt::timer_handler_asm as *const () as u64);
                 pic::disable();
                 kprint!("PIC off\n");
             }
@@ -287,10 +276,11 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     }
     kprint!("TSS ok\n");
 
-    // HEAP
-    let heap_start = unsafe { pmm::alloc() };
+    // HEAP — физ. адрес + KERNEL_VIRT чтобы heap выдавал виртуальные адреса
+    const KERNEL_VIRT: u64 = 0xFFFF800000000000;
+    let heap_start = unsafe { pmm::alloc() } + KERNEL_VIRT;
     unsafe {
-        heap::HEAP.init(heap_start, 4096 * 16);
+        (&raw mut heap::HEAP).as_mut().unwrap().init(heap_start, 4096 * 16);
     }
     kprint!("HEAP ok\n");
 
@@ -331,7 +321,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             }
             for b in sig {
                 unsafe {
-                    CONSOLE.as_mut().unwrap().write_byte(*b);
+                    (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_byte(*b);
                 }
             }
             kprint!(" ");
@@ -341,10 +331,10 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
 
     // SCHEDULER
     unsafe {
-        let proc_a = process::Process::new(1, 0b11, 0, process_a as u64);
-        let proc_b = process::Process::new(2, 0b11, 0, process_b as u64);
-        scheduler::SCHEDULER.add_process(proc_a);
-        scheduler::SCHEDULER.add_process(proc_b);
+        let proc_a = process::Process::new(1, 0b11, 0, process_a as *const () as u64);
+        let proc_b = process::Process::new(2, 0b11, 0, process_b as *const () as u64);
+        (&raw mut scheduler::SCHEDULER).as_mut().unwrap().add_process(proc_a);
+        (&raw mut scheduler::SCHEDULER).as_mut().unwrap().add_process(proc_b);
         kprint!("Scheduler ok\n");
         SCHEDULER_READY = true;
         scheduler::start_first_process();
@@ -360,10 +350,7 @@ fn parse_madt(addr: u64) -> u64 {
     let local_apic_address = unsafe { read_unaligned(addr_of!(madt.local_apic_address)) };
     kprint!("Local APIC: ");
     unsafe {
-        CONSOLE
-            .as_mut()
-            .unwrap()
-            .write_hex(local_apic_address as u64);
+        (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_hex(local_apic_address as u64);
     }
     kprint!("\n");
 
@@ -379,11 +366,11 @@ fn parse_madt(addr: u64) -> u64 {
                 let flags = unsafe { read_unaligned(addr_of!(e.flags)) };
                 kprint!("CPU apic_id=");
                 unsafe {
-                    CONSOLE.as_mut().unwrap().write_hex(apic_id as u64);
+                    (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_hex(apic_id as u64);
                 }
                 kprint!(" flags=");
                 unsafe {
-                    CONSOLE.as_mut().unwrap().write_hex(flags as u64);
+                    (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_hex(flags as u64);
                 }
                 kprint!("\n");
             }
@@ -399,11 +386,11 @@ fn parse_madt(addr: u64) -> u64 {
                 }
                 kprint!("IO APIC id=");
                 unsafe {
-                    CONSOLE.as_mut().unwrap().write_hex(io_apic_id as u64);
+                    (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_hex(io_apic_id as u64);
                 }
                 kprint!(" addr=");
                 unsafe {
-                    CONSOLE.as_mut().unwrap().write_hex(io_apic_address as u64);
+                    (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_hex(io_apic_address as u64);
                 }
                 kprint!("\n");
             }

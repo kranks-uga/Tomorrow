@@ -1,5 +1,6 @@
 use crate::process::{self, Process, ProcessState};
 
+#[repr(C)]
 pub struct Context {
     pub rax: u64,
     pub rbx: u64,
