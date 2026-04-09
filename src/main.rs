@@ -129,10 +129,21 @@ static mut SCHEDULER_READY: bool = false;
 // на стеке rax лежит по наименьшему адресу
 #[repr(C)]
 struct SavedRegs {
-    rax: u64, rbx: u64, rcx: u64, rdx: u64,
-    rbp: u64, rsi: u64, rdi: u64,
-    r8: u64,  r9: u64,  r10: u64, r11: u64,
-    r12: u64, r13: u64, r14: u64, r15: u64,
+    rax: u64,
+    rbx: u64,
+    rcx: u64,
+    rdx: u64,
+    rbp: u64,
+    rsi: u64,
+    rdi: u64,
+    r8: u64,
+    r9: u64,
+    r10: u64,
+    r11: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
 }
 
 #[no_mangle]
@@ -144,8 +155,9 @@ pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const schedul
         return core::ptr::null();
     }
 
-    // сохраняем контекст текущего процесса
     let current = scheduler::SCHEDULER.current;
+
+    // сохраняем контекст текущего процесса
     if let Some(proc) = scheduler::SCHEDULER.processes[current].as_mut() {
         proc.context.rax = (*regs).rax;
         proc.context.rbx = (*regs).rbx;
@@ -154,30 +166,27 @@ pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const schedul
         proc.context.rbp = (*regs).rbp;
         proc.context.rsi = (*regs).rsi;
         proc.context.rdi = (*regs).rdi;
-        proc.context.r8  = (*regs).r8;
-        proc.context.r9  = (*regs).r9;
+        proc.context.r8 = (*regs).r8;
+        proc.context.r9 = (*regs).r9;
         proc.context.r10 = (*regs).r10;
         proc.context.r11 = (*regs).r11;
         proc.context.r12 = (*regs).r12;
         proc.context.r13 = (*regs).r13;
         proc.context.r14 = (*regs).r14;
         proc.context.r15 = (*regs).r15;
-        // iretq фрейм лежит выше наших 15 push'ей = 15 * 8 = 120 байт
         let iretq_frame = (regs as u64 + 120) as *const u64;
-        proc.context.rip    = *iretq_frame;         // offset 0
-        // offset 8  = cs (пропускаем)
-        proc.context.rflags = *iretq_frame.add(2);  // offset 16
-        proc.context.rsp    = *iretq_frame.add(3);  // offset 24
-        // offset 32 = ss (пропускаем)
+        let iretq_frame = (regs as u64 + 120) as *const u64;
+        proc.context.rip = *iretq_frame;
     }
 
     // выбираем следующий процесс
-    for i in 0..64 {
-        let idx = (current + 1 + i) % 64;
+    for i in 1..64 {
+        let idx = (current + i) % 64;
         if let Some(p) = &scheduler::SCHEDULER.processes[idx] {
             if p.state == process::ProcessState::Running {
                 scheduler::SCHEDULER.current = idx;
                 tss::TSS.rsp0 = p.kernel_stack;
+                CONSOLE.as_mut().unwrap().write_dec(idx as u64);
                 return &p.context as *const _;
             }
         }
@@ -193,12 +202,24 @@ extern "C" {
 extern "C" fn process_a() -> ! {
     loop {
         kprint!("A ");
+        unsafe {
+            let old = &mut scheduler::SCHEDULER.processes[0].as_mut().unwrap().context as *mut _;
+            let new = &scheduler::SCHEDULER.processes[1].as_ref().unwrap().context as *const _;
+            scheduler::SCHEDULER.current = 1;
+            scheduler::context_switch(old, new);
+        }
     }
 }
 
 extern "C" fn process_b() -> ! {
     loop {
         kprint!("B ");
+        unsafe {
+            let old = &mut scheduler::SCHEDULER.processes[1].as_mut().unwrap().context as *mut _;
+            let new = &scheduler::SCHEDULER.processes[0].as_ref().unwrap().context as *const _;
+            scheduler::SCHEDULER.current = 0;
+            scheduler::context_switch(old, new);
+        }
     }
 }
 
@@ -253,18 +274,24 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
 
     // PMM
     if mmap_addr != 0 {
-        unsafe { pmm::init(mmap_addr, mmap_size, mmap_entry_size); }
+        unsafe {
+            pmm::init(mmap_addr, mmap_size, mmap_entry_size);
+        }
     }
     kprint!("PMM ok\n");
 
     // TSS
     let kernel_stack = unsafe { pmm::alloc() + 4096 };
-    unsafe { tss::init(kernel_stack); }
+    unsafe {
+        tss::init(kernel_stack);
+    }
     kprint!("TSS ok\n");
 
     // HEAP
     let heap_start = unsafe { pmm::alloc() };
-    unsafe { heap::HEAP.init(heap_start, 4096 * 16); }
+    unsafe {
+        heap::HEAP.init(heap_start, 4096 * 16);
+    }
     kprint!("HEAP ok\n");
 
     // VMM
@@ -289,17 +316,23 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             let sig = unsafe { &*(entry_addr as *const [u8; 4]) };
             if sig == b"APIC" {
                 lapic_base = parse_madt(entry_addr);
-                unsafe { LAPIC_BASE = lapic_base; }
+                unsafe {
+                    LAPIC_BASE = lapic_base;
+                }
                 lapic::enable(lapic_base);
                 ioapic::redirect(unsafe { IOAPIC_BASE }, unsafe { TIMER_GSI }, 0x20, 0);
-                unsafe { core::arch::asm!("sti"); }
+                unsafe {
+                    core::arch::asm!("sti");
+                }
             }
             if sig == b"HPET" {
                 let hpet_base = parse_hpet(entry_addr);
                 unsafe { hpet::init_hpet(hpet_base) };
             }
             for b in sig {
-                unsafe { CONSOLE.as_mut().unwrap().write_byte(*b); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_byte(*b);
+                }
             }
             kprint!(" ");
         }
@@ -314,6 +347,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
         scheduler::SCHEDULER.add_process(proc_b);
         kprint!("Scheduler ok\n");
         SCHEDULER_READY = true;
+        scheduler::start_first_process();
     }
 
     loop {}
@@ -325,7 +359,12 @@ fn parse_madt(addr: u64) -> u64 {
     let madt = unsafe { &*((addr + 36) as *const Madt) };
     let local_apic_address = unsafe { read_unaligned(addr_of!(madt.local_apic_address)) };
     kprint!("Local APIC: ");
-    unsafe { CONSOLE.as_mut().unwrap().write_hex(local_apic_address as u64); }
+    unsafe {
+        CONSOLE
+            .as_mut()
+            .unwrap()
+            .write_hex(local_apic_address as u64);
+    }
     kprint!("\n");
 
     let mut offset: u64 = 36 + 8;
@@ -339,9 +378,13 @@ fn parse_madt(addr: u64) -> u64 {
                 let apic_id = unsafe { *addr_of!(e.apic_id) };
                 let flags = unsafe { read_unaligned(addr_of!(e.flags)) };
                 kprint!("CPU apic_id=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(apic_id as u64); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(apic_id as u64);
+                }
                 kprint!(" flags=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(flags as u64); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(flags as u64);
+                }
                 kprint!("\n");
             }
             1 => {
@@ -350,12 +393,18 @@ fn parse_madt(addr: u64) -> u64 {
                 let io_apic_address = unsafe { read_unaligned(addr_of!(e.io_apic_address)) };
                 let global_irq_base = unsafe { read_unaligned(addr_of!(e.global_irq_base)) };
                 if global_irq_base == 0 {
-                    unsafe { IOAPIC_BASE = io_apic_address as u64; }
+                    unsafe {
+                        IOAPIC_BASE = io_apic_address as u64;
+                    }
                 }
                 kprint!("IO APIC id=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(io_apic_id as u64); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(io_apic_id as u64);
+                }
                 kprint!(" addr=");
-                unsafe { CONSOLE.as_mut().unwrap().write_hex(io_apic_address as u64); }
+                unsafe {
+                    CONSOLE.as_mut().unwrap().write_hex(io_apic_address as u64);
+                }
                 kprint!("\n");
             }
             2 => {
@@ -363,7 +412,9 @@ fn parse_madt(addr: u64) -> u64 {
                 let source = unsafe { *addr_of!(e.source) };
                 let gsi = unsafe { read_unaligned(addr_of!(e.global_system_interrupt)) };
                 if source == 0 {
-                    unsafe { TIMER_GSI = gsi as u8; }
+                    unsafe {
+                        TIMER_GSI = gsi as u8;
+                    }
                 }
             }
             _ => {}

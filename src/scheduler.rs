@@ -77,6 +77,34 @@ impl Scheduler {
     }
 }
 
+pub unsafe fn yield_now() {
+    let current = SCHEDULER.current;
+
+    for i in 1..64 {
+        let idx = (current + i) % 64;
+        if let Some(p) = &SCHEDULER.processes[idx] {
+            if p.state == ProcessState::Running {
+                let old =
+                    &mut SCHEDULER.processes[current].as_mut().unwrap().context as *mut Context;
+                let new = &SCHEDULER.processes[idx].as_ref().unwrap().context as *const Context;
+                SCHEDULER.current = idx;
+                context_switch(old, new);
+                return;
+            }
+        }
+    }
+}
+
+pub unsafe fn start_first_process() -> ! {
+    let ctx = &SCHEDULER.processes[0].as_ref().unwrap().context as *const Context;
+    core::arch::asm!(
+        "mov rsp, [{0} + 0x38]",
+        "jmp [{0} + 0x80]",
+        in(reg) ctx,
+        options(noreturn)
+    );
+}
+
 extern "C" {
     pub fn context_switch(old: *mut Context, new: *const Context);
 }

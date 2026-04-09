@@ -2,7 +2,7 @@
 .global timer_handler_asm
 
 timer_handler_asm:
-    # CPU уже положил на стек: rip, cs, rflags, rsp, ss
+    # CPU положил на стек: rip, cs, rflags, rsp, ss
     # сохраняем все регистры
     push r15
     push r14
@@ -20,17 +20,13 @@ timer_handler_asm:
     push rbx
     push rax
 
-    # передаём rsp как аргумент — указатель на сохранённые регистры
     mov rdi, rsp
     call timer_do_switch
 
-    # rax = 0 если переключение не нужно
-    # rax = указатель на новый Context если нужно
     test rax, rax
     jz .restore
 
-    # переключаемся на новый процесс
-    # rax = *const Context
+    # rax = указатель на новый Context
     mov rbx, rax
 
     # загружаем регистры нового процесса
@@ -49,32 +45,18 @@ timer_handler_asm:
     mov r14, [rbx + 0x70]
     mov r15, [rbx + 0x78]
 
-    # строим iretq фрейм на kernel stack нового процесса
+    # переключаем стек на kernel stack нового процесса
     mov rsp, [rbx + 0x98]
 
-    # iretq фрейм снизу вверх: rip, cs, rflags, rsp, ss
-    xor rcx, rcx
-    mov cx, 0x10
-    push rcx                    # ss
-
-    mov rcx, [rbx + 0x38]
-    push rcx                    # rsp нового процесса
-
-    mov rcx, [rbx + 0x88]
-    push rcx                    # rflags
-
-    xor rcx, rcx
-    mov cx, 0x08
-    push rcx                    # cs
-
+    # кладём rip на стек и прыгаем через ret
     mov rcx, [rbx + 0x80]
-    push rcx                    # rip
+    push rcx
 
-    # загружаем rbx и rcx последними
+    # загружаем rcx и rbx последними
     mov rcx, [rbx + 0x10]
     mov rbx, [rbx + 0x08]
 
-    iretq
+    ret
 
 .restore:
     pop rax
