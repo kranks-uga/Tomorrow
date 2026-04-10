@@ -113,7 +113,12 @@ static mut CONSOLE: Option<Console> = None;
 macro_rules! kprint {
     ($s:expr) => {
         unsafe {
-            (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_str($s);
+            (&raw mut CONSOLE)
+                .as_mut()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .write_str($s);
         }
     };
 }
@@ -151,7 +156,7 @@ pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const schedul
     TICKS += 1;
     lapic::eoi(LAPIC_BASE);
 
-    if !SCHEDULER_READY || TICKS % 50 != 0 {
+    if !SCHEDULER_READY || TICKS % 5 != 0 {
         return core::ptr::null();
     }
 
@@ -166,8 +171,8 @@ pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const schedul
         proc.context.rbp = (*regs).rbp;
         proc.context.rsi = (*regs).rsi;
         proc.context.rdi = (*regs).rdi;
-        proc.context.r8  = (*regs).r8;
-        proc.context.r9  = (*regs).r9;
+        proc.context.r8 = (*regs).r8;
+        proc.context.r9 = (*regs).r9;
         proc.context.r10 = (*regs).r10;
         proc.context.r11 = (*regs).r11;
         proc.context.r12 = (*regs).r12;
@@ -176,9 +181,9 @@ pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const schedul
         proc.context.r15 = (*regs).r15;
         // iretq-фрейм CPU: [rip, cs, rflags, rsp, ss] — сразу над 15 push'ами (15*8=120)
         let iretq = (regs as u64 + 120) as *const u64;
-        proc.context.rip    = *iretq.add(0); // rip
+        proc.context.rip = *iretq.add(0); // rip
         proc.context.rflags = *iretq.add(2); // rflags
-        proc.context.rsp    = *iretq.add(3); // rsp (стек прерванного процесса)
+        proc.context.rsp = *iretq.add(3); // rsp (стек прерванного процесса)
     }
 
     // выбираем следующий процесс
@@ -200,9 +205,13 @@ extern "C" {
     static pml4: vmm::PageTable;
 }
 
+// Пока process_a в ring-0 — вызываем syscall_handler напрямую.
+// Когда появится настоящий userspace (ring-3), будет использоваться инструкция syscall.
 extern "C" fn process_a() -> ! {
     loop {
-        kprint!("A");
+        unsafe {
+            syscall::syscall_handler(1, 1, b"A".as_ptr() as u64, 1, 0, 0);
+        }
     }
 }
 
@@ -241,7 +250,12 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                         cx: 0,
                         cy: 0,
                     });
-                    (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().clear();
+                    (&raw mut CONSOLE)
+                        .as_mut()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .clear();
                 }
                 kprint!("Tomorrow OS\n");
                 idt::init();
@@ -280,7 +294,10 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     const KERNEL_VIRT: u64 = 0xFFFF800000000000;
     let heap_start = unsafe { pmm::alloc() } + KERNEL_VIRT;
     unsafe {
-        (&raw mut heap::HEAP).as_mut().unwrap().init(heap_start, 4096 * 16);
+        (&raw mut heap::HEAP)
+            .as_mut()
+            .unwrap()
+            .init(heap_start, 4096 * 16);
     }
     kprint!("HEAP ok\n");
 
@@ -321,7 +338,12 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             }
             for b in sig {
                 unsafe {
-                    (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_byte(*b);
+                    (&raw mut CONSOLE)
+                        .as_mut()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .write_byte(*b);
                 }
             }
             kprint!(" ");
@@ -333,8 +355,14 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     unsafe {
         let proc_a = process::Process::new(1, 0b11, 0, process_a as *const () as u64);
         let proc_b = process::Process::new(2, 0b11, 0, process_b as *const () as u64);
-        (&raw mut scheduler::SCHEDULER).as_mut().unwrap().add_process(proc_a);
-        (&raw mut scheduler::SCHEDULER).as_mut().unwrap().add_process(proc_b);
+        (&raw mut scheduler::SCHEDULER)
+            .as_mut()
+            .unwrap()
+            .add_process(proc_a);
+        (&raw mut scheduler::SCHEDULER)
+            .as_mut()
+            .unwrap()
+            .add_process(proc_b);
         kprint!("Scheduler ok\n");
         SCHEDULER_READY = true;
         scheduler::start_first_process();
@@ -350,7 +378,12 @@ fn parse_madt(addr: u64) -> u64 {
     let local_apic_address = unsafe { read_unaligned(addr_of!(madt.local_apic_address)) };
     kprint!("Local APIC: ");
     unsafe {
-        (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_hex(local_apic_address as u64);
+        (&raw mut CONSOLE)
+            .as_mut()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .write_hex(local_apic_address as u64);
     }
     kprint!("\n");
 
@@ -366,11 +399,21 @@ fn parse_madt(addr: u64) -> u64 {
                 let flags = unsafe { read_unaligned(addr_of!(e.flags)) };
                 kprint!("CPU apic_id=");
                 unsafe {
-                    (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_hex(apic_id as u64);
+                    (&raw mut CONSOLE)
+                        .as_mut()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .write_hex(apic_id as u64);
                 }
                 kprint!(" flags=");
                 unsafe {
-                    (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_hex(flags as u64);
+                    (&raw mut CONSOLE)
+                        .as_mut()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .write_hex(flags as u64);
                 }
                 kprint!("\n");
             }
@@ -386,11 +429,21 @@ fn parse_madt(addr: u64) -> u64 {
                 }
                 kprint!("IO APIC id=");
                 unsafe {
-                    (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_hex(io_apic_id as u64);
+                    (&raw mut CONSOLE)
+                        .as_mut()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .write_hex(io_apic_id as u64);
                 }
                 kprint!(" addr=");
                 unsafe {
-                    (&raw mut CONSOLE).as_mut().unwrap().as_mut().unwrap().write_hex(io_apic_address as u64);
+                    (&raw mut CONSOLE)
+                        .as_mut()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .write_hex(io_apic_address as u64);
                 }
                 kprint!("\n");
             }

@@ -41,13 +41,17 @@ pub struct TssDescriptor {
 }
 
 // GDT с поддержкой TSS
-// 0x00: null, 0x08: code, 0x10: data, 0x18+0x20: TSS (16 байт)
-static mut GDT: [u64; 5] = [
-    0x0000000000000000, // null
-    0x00AF9A000000FFFF, // 0x08: kernel code
-    0x00AF92000000FFFF, // 0x10: kernel data
-    0x0000000000000000, // 0x18: TSS low  (заполним в init)
-    0x0000000000000000, // 0x20: TSS high (заполним в init)
+// 0x00: null, 0x08: kernel code, 0x10: kernel data,
+// 0x18: user data (DPL=3), 0x20: user code (DPL=3),
+// 0x28+0x30: TSS (16 байт)
+static mut GDT: [u64; 7] = [
+    0x0000000000000000, // 0x00: null
+    0x00AF9A000000FFFF, // 0x08: kernel code  (DPL=0, L=1)
+    0x00AF92000000FFFF, // 0x10: kernel data  (DPL=0)
+    0x00AFF2000000FFFF, // 0x18: user data    (DPL=3)  ← SS для SYSRET = 0x1B
+    0x00AFFA000000FFFF, // 0x20: user code    (DPL=3, L=1) ← CS для SYSRET = 0x23
+    0x0000000000000000, // 0x28: TSS low  (заполним в init)
+    0x0000000000000000, // 0x30: TSS high (заполним в init)
 ];
 
 #[repr(C, packed)]
@@ -67,20 +71,20 @@ pub unsafe fn init(kernel_stack: u64) {
 
     // TSS дескриптор — 16 байт (два слота GDT)
     let gdt = &raw mut GDT;
-    (*gdt)[3] = (limit & 0xFFFF)
+    (*gdt)[5] = (limit & 0xFFFF)
         | ((base & 0xFFFFFF) << 16)
         | (0x89u64 << 40)        // Present + TSS type
         | (((limit >> 16) & 0xF) << 48)
         | (((base >> 24) & 0xFF) << 56);
-    (*gdt)[4] = (base >> 32) & 0xFFFFFFFF;
+    (*gdt)[6] = (base >> 32) & 0xFFFFFFFF;
 
     // загружаем новый GDT
     let gdt_ptr = GdtPtr {
-        limit: (core::mem::size_of::<[u64; 5]>() - 1) as u16,
+        limit: (core::mem::size_of::<[u64; 7]>() - 1) as u16,
         base: core::ptr::addr_of!(GDT) as u64,
     };
     core::arch::asm!("lgdt [{}]", in(reg) &gdt_ptr);
 
-    // загружаем TSS селектор 0x18 в TR
-    core::arch::asm!("ltr ax", in("ax") 0x18u16);
+    // загружаем TSS селектор 0x28 в TR
+    core::arch::asm!("ltr ax", in("ax") 0x28u16);
 }
