@@ -1,4 +1,5 @@
 use crate::process::{self, Process, ProcessState};
+use crate::CONSOLE;
 
 #[repr(C)]
 pub struct Context {
@@ -18,10 +19,12 @@ pub struct Context {
     pub r13: u64,
     pub r14: u64,
     pub r15: u64,
-    pub rip: u64, // адрес следующей инструкции
-    pub rflags: u64,
-    pub cr3: u64,
-    pub kernel_stack: u64,
+    pub rip: u64,    // 0x80
+    pub rflags: u64, // 0x88
+    pub cs: u64,     // 0x90
+    pub ss: u64,     // 0x98
+    pub cr3: u64,    // 0xA0
+    pub kernel_stack: u64, // 0xA8
 }
 
 pub struct Scheduler {
@@ -102,6 +105,27 @@ pub unsafe fn start_first_process() -> ! {
         "mov rsp, [{0} + 0x38]",
         "jmp [{0} + 0x80]",
         in(reg) ctx,
+        options(noreturn)
+    );
+}
+
+pub unsafe fn start_first_process_ring3() -> ! {
+    let proc = SCHEDULER.processes[0].as_ref().unwrap();
+    let rip = proc.context.rip;
+    let rsp = proc.user_stack;
+
+    (&raw mut crate::tss::TSS).as_mut().unwrap().rsp0 = proc.kernel_stack;
+
+    // iretq frame (low → high на стеке): RIP, CS, RFLAGS, RSP, SS
+    core::arch::asm!(
+        "push 0x1B",       // SS  = GDT[3] | RPL=3
+        "push {rsp_val}",  // user RSP
+        "push 0x202",      // RFLAGS: IF=1, reserved=1
+        "push 0x23",       // CS  = GDT[4] | RPL=3
+        "push {rip_val}",  // user RIP
+        "iretq",
+        rsp_val = in(reg) rsp,
+        rip_val = in(reg) rip,
         options(noreturn)
     );
 }

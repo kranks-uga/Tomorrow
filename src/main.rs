@@ -123,6 +123,20 @@ macro_rules! kprint {
     };
 }
 
+#[macro_export]
+macro_rules! write_hex {
+    ($v:expr) => {
+        unsafe {
+            (&raw mut CONSOLE)
+                .as_mut()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .write_hex($v);
+        }
+    };
+}
+
 static mut IOAPIC_BASE: u64 = 0;
 static mut LAPIC_BASE: u64 = 0;
 static mut TICKS: u64 = 0;
@@ -182,8 +196,10 @@ pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const schedul
         // iretq-фрейм CPU: [rip, cs, rflags, rsp, ss] — сразу над 15 push'ами (15*8=120)
         let iretq = (regs as u64 + 120) as *const u64;
         proc.context.rip = *iretq.add(0); // rip
+        proc.context.cs = *iretq.add(1); // cs
         proc.context.rflags = *iretq.add(2); // rflags
-        proc.context.rsp = *iretq.add(3); // rsp (стек прерванного процесса)
+        proc.context.rsp = *iretq.add(3); // rsp
+        proc.context.ss = *iretq.add(4); // ss
     }
 
     // выбираем следующий процесс
@@ -207,12 +223,19 @@ extern "C" {
 
 // Пока process_a в ring-0 — вызываем syscall_handler напрямую.
 // Когда появится настоящий userspace (ring-3), будет использоваться инструкция syscall.
+#[unsafe(naked)]
 extern "C" fn process_a() -> ! {
-    loop {
-        unsafe {
-            syscall::syscall_handler(1, 1, b"A".as_ptr() as u64, 1, 0, 0);
-        }
-    }
+    core::arch::naked_asm!(
+        ".intel_syntax noprefix",
+        "lea rsi, [rip + 1f]",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "mov rdx, 3",
+        "syscall",
+        "0: jmp 0b",
+        "1: .byte 0x55, 0x33, 0x0A",
+        ".att_syntax prefix",
+    )
 }
 
 extern "C" fn process_b() -> ! {
@@ -262,6 +285,9 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 kprint!("IDT ok\n");
                 idt::set_handler(0xFF, idt::spurious_handler as *const () as u64);
                 idt::set_handler(0x20, idt::timer_handler_asm as *const () as u64);
+                // диагностические обработчики исключений
+                idt::set_handler(0x0D, idt::gp_handler_asm as *const () as u64);
+                idt::set_handler(0x0E, idt::pf_handler_asm as *const () as u64);
                 pic::disable();
                 kprint!("PIC off\n");
             }
@@ -284,7 +310,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     kprint!("PMM ok\n");
 
     // TSS
-    let kernel_stack = unsafe { pmm::alloc() + 4096 };
+    let kernel_stack = unsafe { pmm::alloc() + KERNEL_VIRT + 4096 };
     unsafe {
         tss::init(kernel_stack);
     }
@@ -354,18 +380,15 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     // SCHEDULER
     unsafe {
         let proc_a = process::Process::new(1, 0b11, 0, process_a as *const () as u64);
-        let proc_b = process::Process::new(2, 0b11, 0, process_b as *const () as u64);
+        // let proc_b = process::Process::new(2, 0b11, 0, process_b as *const () as u64);
         (&raw mut scheduler::SCHEDULER)
             .as_mut()
             .unwrap()
             .add_process(proc_a);
-        (&raw mut scheduler::SCHEDULER)
-            .as_mut()
-            .unwrap()
-            .add_process(proc_b);
+        // (&raw mut scheduler::SCHEDULER).as_mut().unwrap().add_process(proc_b);
         kprint!("Scheduler ok\n");
-        SCHEDULER_READY = true;
-        scheduler::start_first_process();
+        //SCHEDULER_READY = true;
+        scheduler::start_first_process_ring3();
     }
 
     loop {}

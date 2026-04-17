@@ -27,26 +27,42 @@ impl PageTable {
         let pd_idx = (virt >> 21) & 0x1FF;
         let pt_idx = (virt >> 12) & 0x1FF;
 
-        let pml4_entry = &mut self.entries[pml4_idx as usize];
+        let user_bit = flags & PAGE_USER;
 
+        let pml4_entry = &mut self.entries[pml4_idx as usize];
         if *pml4_entry & PAGE_PRESENT == 0 {
             let new_table = PageTable::new();
-
-            *pml4_entry = new_table as u64 | PAGE_PRESENT | PAGE_WRITABLE;
+            *pml4_entry = new_table as u64 | PAGE_PRESENT | PAGE_WRITABLE | user_bit;
+        } else if user_bit != 0 {
+            *pml4_entry |= PAGE_USER;
         }
+
+        const PS: u64 = 1 << 7; // large page bit
 
         let pdpt = ((*pml4_entry) & 0x000FFFFF_FFFFF000) as *mut PageTable;
         let pdpt_entry = &mut (*pdpt).entries[pdpt_idx as usize];
         if *pdpt_entry & PAGE_PRESENT == 0 {
             let new_table = PageTable::new();
-            *pdpt_entry = new_table as u64 | PAGE_PRESENT | PAGE_WRITABLE;
+            *pdpt_entry = new_table as u64 | PAGE_PRESENT | PAGE_WRITABLE | user_bit;
+        } else if *pdpt_entry & PS != 0 {
+            // 1GB large page — просто добавляем USER, нельзя создать 4KB внутри
+            if user_bit != 0 { *pdpt_entry |= PAGE_USER; }
+            return;
+        } else if user_bit != 0 {
+            *pdpt_entry |= PAGE_USER;
         }
 
         let pd = ((*pdpt_entry) & 0x000FFFFF_FFFFF000) as *mut PageTable;
         let pd_entry = &mut (*pd).entries[pd_idx as usize];
         if *pd_entry & PAGE_PRESENT == 0 {
             let new_table = PageTable::new();
-            *pd_entry = new_table as u64 | PAGE_PRESENT | PAGE_WRITABLE;
+            *pd_entry = new_table as u64 | PAGE_PRESENT | PAGE_WRITABLE | user_bit;
+        } else if *pd_entry & PS != 0 {
+            // 2MB large page — просто добавляем USER, нельзя создать 4KB внутри
+            if user_bit != 0 { *pd_entry |= PAGE_USER; }
+            return;
+        } else if user_bit != 0 {
+            *pd_entry |= PAGE_USER;
         }
 
         let pt = ((*pd_entry) & 0x000FFFFF_FFFFF000) as *mut PageTable;

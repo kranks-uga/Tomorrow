@@ -29,15 +29,17 @@ timer_handler_asm:
     mov rbx, rax
 
     # переходим на kernel_stack нового процесса
-    mov rsp, [rbx + 0x98]
+    mov rsp, [rbx + 0xA8]
 
     # строим iretq-фрейм (CPU ожидает снизу вверх: ss, rsp, rflags, cs, rip)
-    push 0x10                       # SS  (kernel data)
+    mov rax, [rbx + 0x98]
+    push rax                        # SS  из контекста
     mov rax, [rbx + 0x38]
     push rax                        # RSP нового процесса
     mov rax, [rbx + 0x88]
     push rax                        # RFLAGS
-    push 0x08                       # CS  (kernel code)
+    mov rax, [rbx + 0x90]
+    push rax                        # CS  из контекста
     mov rax, [rbx + 0x80]
     push rax                        # RIP
 
@@ -60,20 +62,26 @@ timer_handler_asm:
 
     iretq
 
-.restore:
-    pop rax
-    pop rbx
-    pop rcx
-    pop rdx
-    pop rbp
-    pop rsi
-    pop rdi
-    pop r8
-    pop r9
-    pop r10
-    pop r11
-    pop r12
-    pop r13
-    pop r14
-    pop r15
-    iretq
+.restore:                                                                                                                                                                                  
+      pop rax                                               
+      pop rbx
+      pop rcx
+      pop rdx
+      pop rbp
+      pop rsi
+      pop rdi
+      pop r8
+      pop r9                                                                                                                                                                                 
+      pop r10
+      pop r11                                                                                                                                                                                
+      pop r12                                               
+      pop r13
+      pop r14
+      pop r15
+      # CS находится на [rsp+8], SS на [rsp+32]
+      # если возвращаемся в ring-3 (CS.RPL != 0) — фиксим SS.RPL                                                                                                                             
+      test WORD PTR [rsp + 8], 3                                                                                                                                                             
+      jz 1f                                                                                                                                                                                  
+      or WORD PTR [rsp + 32], 3                                                                                                                                                              
+  1:                                                                                                                                                                                         
+      iretq

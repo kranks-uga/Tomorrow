@@ -53,10 +53,8 @@ pub fn init() {
         // LSTAR — адрес обработчика
         write_msr(MSR_LSTAR, syscall_entry as *const () as u64);
 
-        // STAR:
-        //   [47:32] = 0x0008 → SYSCALL: CS=0x08 (kernel code), SS=0x10 (kernel data)
-        //   [63:48] = 0x0013 → SYSRET:  CS=0x23 (0x13+16, user code), SS=0x1B (0x13+8, user data)
-        write_msr(MSR_STAR, 0x0013_0008_0000_0000);
+        // STAR: [47:32]=0x0008 kernel CS, [63:48]=0x0018 user SS base
+        write_msr(MSR_STAR, 0x0010_0008_0000_0000);
 
         // SYSCALL_MASK — сбрасывает IF при входе
         write_msr(MSR_SYSCALL_MASK, 0x200);

@@ -46,10 +46,10 @@ pub struct TssDescriptor {
 // 0x28+0x30: TSS (16 байт)
 static mut GDT: [u64; 7] = [
     0x0000000000000000, // 0x00: null
-    0x00AF9A000000FFFF, // 0x08: kernel code  (DPL=0, L=1)
-    0x00AF92000000FFFF, // 0x10: kernel data  (DPL=0)
-    0x00AFF2000000FFFF, // 0x18: user data    (DPL=3)  ← SS для SYSRET = 0x1B
-    0x00AFFA000000FFFF, // 0x20: user code    (DPL=3, L=1) ← CS для SYSRET = 0x23
+    0x00AF9A000000FFFF, // 0x08: kernel code  (DPL=0, L=1, D=0)
+    0x00CF92000000FFFF, // 0x10: kernel data  (DPL=0, L=0, D=1)
+    0x00CFF2000000FFFF, // 0x18: user data    (DPL=3, L=0, D=1) ← SS для SYSRET = 0x1B
+    0x00AFFA000000FFFF, // 0x20: user code    (DPL=3, L=1, D=0) ← CS для SYSRET = 0x23
     0x0000000000000000, // 0x28: TSS low  (заполним в init)
     0x0000000000000000, // 0x30: TSS high (заполним в init)
 ];
