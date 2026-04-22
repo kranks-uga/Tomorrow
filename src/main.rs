@@ -14,6 +14,7 @@ mod hpet;
 mod idt;
 mod ioapic;
 mod lapic;
+mod pci;
 mod pic;
 mod pmm;
 mod process;
@@ -21,6 +22,7 @@ mod scheduler;
 mod syscall;
 mod tss;
 mod vmm;
+mod xhci;
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -238,10 +240,19 @@ extern "C" fn process_a() -> ! {
     )
 }
 
+#[unsafe(naked)]
 extern "C" fn process_b() -> ! {
-    loop {
-        kprint!("B");
-    }
+    core::arch::naked_asm!(
+        ".intel_syntax noprefix",
+        "lea rsi, [rip + 1f]",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "mov rdx, 2",
+        "syscall",
+        "0: jmp 0b",
+        "1: .byte 0x42, 0x0A",
+        ".att_syntax prefix",
+    )
 }
 
 #[no_mangle]
@@ -362,6 +373,20 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 let hpet_base = parse_hpet(entry_addr);
                 unsafe { hpet::init_hpet(hpet_base) };
             }
+            if sig == b"MCFG" {
+                unsafe {
+                    let mcfg_base = core::ptr::read_unaligned((entry_addr + 44) as *const u64);
+                    crate::kprint!("MCFG: ");
+                    crate::write_hex!(mcfg_base);
+                    crate::kprint!("\n");
+                    if let Some(xhci_bar) = pci::find_xhci(mcfg_base) {
+                        xhci::init(xhci_bar);
+                        kprint!("xhci_bar: ");
+                        crate::write_hex!(xhci_bar);
+                        kprint!("\n");
+                    }
+                }
+            }
             for b in sig {
                 unsafe {
                     (&raw mut CONSOLE)
@@ -380,14 +405,17 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     // SCHEDULER
     unsafe {
         let proc_a = process::Process::new(1, 0b11, 0, process_a as *const () as u64);
-        // let proc_b = process::Process::new(2, 0b11, 0, process_b as *const () as u64);
+        let proc_b = process::Process::new(2, 0b11, 0, process_b as *const () as u64);
         (&raw mut scheduler::SCHEDULER)
             .as_mut()
             .unwrap()
             .add_process(proc_a);
-        // (&raw mut scheduler::SCHEDULER).as_mut().unwrap().add_process(proc_b);
+        (&raw mut scheduler::SCHEDULER)
+            .as_mut()
+            .unwrap()
+            .add_process(proc_b);
         kprint!("Scheduler ok\n");
-        //SCHEDULER_READY = true;
+        SCHEDULER_READY = true;
         scheduler::start_first_process_ring3();
     }
 
