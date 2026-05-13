@@ -80,9 +80,9 @@ global_asm!(
     // #PF (14) — pushes error code
     ".globl pf_handler_asm",
     "pf_handler_asm:",
-    "mov rdi, [rsp]",      // error_code
-    "mov rsi, [rsp + 8]",  // fault rip
-    "mov rdx, cr2",        // faulting virtual address
+    "mov rdi, [rsp]",     // error_code
+    "mov rsi, [rsp + 8]", // fault rip
+    "mov rdx, cr2",       // faulting virtual address
     "add rsp, 8",
     "call on_pf",
     "cli",
@@ -93,6 +93,7 @@ global_asm!(
 extern "C" {
     pub fn spurious_handler();
     pub fn timer_handler_asm();
+    pub fn keyboard_handler_asm();
     pub fn gp_handler_asm();
     pub fn pf_handler_asm();
 }

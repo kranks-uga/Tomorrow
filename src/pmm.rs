@@ -35,12 +35,20 @@ pub unsafe fn init(mmap_addr: u64, mmap_size: u32, entry_size: u32) {
         offset += entry_size;
     }
 
+    // Шаг 2а: резервируем первые 1MB — там BIOS, IVT, EBDA, видеопамять
+    // Без этого PMM выдаёт страницы типа 0x8000 куда пишет BIOS/контроллеры
+    let mut addr = 0u64;
+    while addr < 0x100000 {
+        mark_used(addr);
+        addr += 4096;
+    }
+
     // Шаг 2: пометить страницы ядра как занятые
     // _kernel_start и _kernel_end — физические адреса из linker.ld
     let kstart = core::ptr::addr_of!(_kernel_start) as u64;
-    let kend   = core::ptr::addr_of!(_kernel_end)   as u64;
+    let kend = core::ptr::addr_of!(_kernel_end) as u64;
     let page_start = kstart & !0xFFF;
-    let page_end   = (kend + 0xFFF) & !0xFFF;
+    let page_end = (kend + 0xFFF) & !0xFFF;
     let mut addr = page_start;
     while addr < page_end {
         mark_used(addr);

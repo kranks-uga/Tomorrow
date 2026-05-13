@@ -1,4 +1,4 @@
-//authors: Kirill Repin, Denis Ansuk, Rusina Lilianna
+//authors: Kirill Repin, Denis Ansuk, Rusina Lilianna, Filipp Razanov
 
 #![no_std]
 #![no_main]
@@ -13,6 +13,7 @@ mod heap;
 mod hpet;
 mod idt;
 mod ioapic;
+mod keyboard;
 mod lapic;
 mod pci;
 mod pic;
@@ -28,6 +29,8 @@ mod xhci;
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
+
+const KERNEL_VIRT: u64 = 0xFFFF800000000000;
 
 #[repr(C)]
 struct Mbtag {
@@ -78,12 +81,6 @@ struct AcpiHeader {
 struct Madt {
     local_apic_address: u32,
     flags: u32,
-}
-
-#[repr(C, packed)]
-struct MadtEntryHeader {
-    typ: u8,
-    length: u8,
 }
 
 #[repr(C, packed)]
@@ -140,14 +137,11 @@ macro_rules! write_hex {
 }
 
 static mut IOAPIC_BASE: u64 = 0;
-static mut LAPIC_BASE: u64 = 0;
+pub static mut LAPIC_BASE: u64 = 0;
 static mut TICKS: u64 = 0;
 static mut TIMER_GSI: u8 = 0;
 static mut SCHEDULER_READY: bool = false;
 
-// Порядок полей должен совпадать с порядком push в timer.s
-// push: r15, r14, r13, r12, r11, r10, r9, r8, rdi, rsi, rbp, rdx, rcx, rbx, rax
-// на стеке rax лежит по наименьшему адресу
 #[repr(C)]
 struct SavedRegs {
     rax: u64,
@@ -178,7 +172,6 @@ pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const schedul
 
     let current = scheduler::SCHEDULER.current;
 
-    // сохраняем контекст текущего процесса
     if let Some(proc) = scheduler::SCHEDULER.processes[current].as_mut() {
         proc.context.rax = (*regs).rax;
         proc.context.rbx = (*regs).rbx;
@@ -195,16 +188,14 @@ pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const schedul
         proc.context.r13 = (*regs).r13;
         proc.context.r14 = (*regs).r14;
         proc.context.r15 = (*regs).r15;
-        // iretq-фрейм CPU: [rip, cs, rflags, rsp, ss] — сразу над 15 push'ами (15*8=120)
         let iretq = (regs as u64 + 120) as *const u64;
-        proc.context.rip = *iretq.add(0); // rip
-        proc.context.cs = *iretq.add(1); // cs
-        proc.context.rflags = *iretq.add(2); // rflags
-        proc.context.rsp = *iretq.add(3); // rsp
-        proc.context.ss = *iretq.add(4); // ss
+        proc.context.rip = *iretq.add(0);
+        proc.context.cs = *iretq.add(1);
+        proc.context.rflags = *iretq.add(2);
+        proc.context.rsp = *iretq.add(3);
+        proc.context.ss = *iretq.add(4);
     }
 
-    // выбираем следующий процесс
     for i in 1..64 {
         let idx = (current + i) % 64;
         if let Some(p) = &scheduler::SCHEDULER.processes[idx] {
@@ -223,8 +214,6 @@ extern "C" {
     static pml4: vmm::PageTable;
 }
 
-// Пока process_a в ring-0 — вызываем syscall_handler напрямую.
-// Когда появится настоящий userspace (ring-3), будет использоваться инструкция syscall.
 #[unsafe(naked)]
 extern "C" fn process_a() -> ! {
     core::arch::naked_asm!(
@@ -258,11 +247,11 @@ extern "C" fn process_b() -> ! {
 #[no_mangle]
 pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     let mut xsdt_addr: u64 = 0;
-    let mut lapic_base: u64;
     let mut mmap_addr: u64 = 0;
     let mut mmap_size: u32 = 0;
     let mut mmap_entry_size: u32 = 0;
 
+    // === Парсим Multiboot2 теги ===
     let mut ptr = (boot_info + 8) as *const Mbtag;
     loop {
         let tag = unsafe { &*(ptr as *const Mbtag) };
@@ -296,7 +285,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 kprint!("IDT ok\n");
                 idt::set_handler(0xFF, idt::spurious_handler as *const () as u64);
                 idt::set_handler(0x20, idt::timer_handler_asm as *const () as u64);
-                // диагностические обработчики исключений
+                idt::set_handler(0x21, idt::keyboard_handler_asm as *const () as u64);
                 idt::set_handler(0x0D, idt::gp_handler_asm as *const () as u64);
                 idt::set_handler(0x0E, idt::pf_handler_asm as *const () as u64);
                 pic::disable();
@@ -312,7 +301,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
         ptr = unsafe { (ptr as *const u8).add(aligned) as *const Mbtag };
     }
 
-    // PMM
+    // === PMM ===
     if mmap_addr != 0 {
         unsafe {
             pmm::init(mmap_addr, mmap_size, mmap_entry_size);
@@ -320,46 +309,41 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     }
     kprint!("PMM ok\n");
 
-    // TSS
-    let kernel_stack = unsafe { pmm::alloc() + KERNEL_VIRT + 4096 };
+    // === TSS ===
+    let kernel_stack = unsafe { pmm::alloc() + 4096 }; // +4096 — стек растёт вниз
     unsafe {
         tss::init(kernel_stack);
     }
     kprint!("TSS ok\n");
 
-    // HEAP — физ. адрес + KERNEL_VIRT чтобы heap выдавал виртуальные адреса
-    const KERNEL_VIRT: u64 = 0xFFFF800000000000;
-    let heap_start = unsafe { pmm::alloc() } + KERNEL_VIRT;
-    unsafe {
-        (&raw mut heap::HEAP)
-            .as_mut()
-            .unwrap()
-            .init(heap_start, 4096 * 16);
-    }
+    // === HEAP ===
+    let heap_start = unsafe { pmm::alloc() }; // identity map — физ. адрес доступен напрямую
+    heap::HEAP.init(heap_start, 4096 * 16);
     kprint!("HEAP ok\n");
 
-    // VMM
-    unsafe {
-        let pml4_ptr = &pml4 as *const _ as *mut vmm::PageTable;
-        (*pml4_ptr).map(0xFFFF_8000_0020_0000, 0x200000, vmm::PAGE_WRITABLE);
-    }
+    // === VMM ===
+    // Identity map из boot.s покрывает всю физическую память — доп. маппинг не нужен
     kprint!("VMM ok\n");
 
-    // SYSCALL
+    // === SYSCALL ===
     syscall::init();
     kprint!("Syscall ok\n");
 
-    // ACPI
+    // === ACPI ===
+    let mut xhci_bar_phys: Option<u64> = None;
+
     if xsdt_addr != 0 {
         let header = unsafe { &*(xsdt_addr as *const AcpiHeader) };
         let length = unsafe { read_unaligned(addr_of!(header.length)) };
         let count = (length as usize - 36) / 8;
         let entries_ptr = (xsdt_addr + 36) as *const u64;
+
+        // Проход 1: APIC
         for i in 0..count {
             let entry_addr = unsafe { read_unaligned(entries_ptr.add(i)) };
             let sig = unsafe { &*(entry_addr as *const [u8; 4]) };
             if sig == b"APIC" {
-                lapic_base = parse_madt(entry_addr);
+                let lapic_base = parse_madt(entry_addr);
                 unsafe {
                     LAPIC_BASE = lapic_base;
                 }
@@ -368,25 +352,25 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 unsafe {
                     core::arch::asm!("sti");
                 }
+                kprint!("APIC ok\n");
             }
-            if sig == b"HPET" {
-                let hpet_base = parse_hpet(entry_addr);
-                unsafe { hpet::init_hpet(hpet_base) };
-            }
+        }
+
+        // Проход 2: MCFG → xHCI
+        for i in 0..count {
+            let entry_addr = unsafe { read_unaligned(entries_ptr.add(i)) };
+            let sig = unsafe { &*(entry_addr as *const [u8; 4]) };
+
             if sig == b"MCFG" {
                 unsafe {
                     let mcfg_base = core::ptr::read_unaligned((entry_addr + 44) as *const u64);
-                    crate::kprint!("MCFG: ");
-                    crate::write_hex!(mcfg_base);
-                    crate::kprint!("\n");
-                    if let Some(xhci_bar) = pci::find_xhci(mcfg_base) {
-                        xhci::init(xhci_bar);
-                        kprint!("xhci_bar: ");
-                        crate::write_hex!(xhci_bar);
-                        kprint!("\n");
-                    }
+                    kprint!("MCFG: ");
+                    write_hex!(mcfg_base);
+                    kprint!("\n");
+                    xhci_bar_phys = pci::find_xhci(mcfg_base);
                 }
             }
+
             for b in sig {
                 unsafe {
                     (&raw mut CONSOLE)
@@ -402,7 +386,27 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
         kprint!("\n");
     }
 
-    // SCHEDULER
+    // === Keyboard — после xHCI OS Handoff ===
+    // OS Handoff в pci::find_xhci освобождает контроллер от BIOS,
+    // только после этого IRQ1 начинает работать
+    ioapic::redirect(unsafe { IOAPIC_BASE }, 1, 0x21, 0);
+    keyboard::init();
+
+    // === xHCI ===
+    if let Some(bar_phys) = xhci_bar_phys {
+        // bar_phys < 512GB — уже покрыт identity map из boot.s (pdpt0 × 1GB huge pages)
+        // Маппинг не нужен, передаём физический адрес напрямую
+        kprint!("xhci bar: ");
+        write_hex!(bar_phys);
+        kprint!("\n");
+        // unsafe {
+        //     xhci::init(bar_phys);
+        // }
+    } else {
+        kprint!("xhci not found\n");
+    }
+
+    // === Scheduler ===
     unsafe {
         let proc_a = process::Process::new(1, 0b11, 0, process_a as *const () as u64);
         let proc_b = process::Process::new(2, 0b11, 0, process_b as *const () as u64);
@@ -428,14 +432,7 @@ fn parse_madt(addr: u64) -> u64 {
     let madt = unsafe { &*((addr + 36) as *const Madt) };
     let local_apic_address = unsafe { read_unaligned(addr_of!(madt.local_apic_address)) };
     kprint!("Local APIC: ");
-    unsafe {
-        (&raw mut CONSOLE)
-            .as_mut()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .write_hex(local_apic_address as u64);
-    }
+    write_hex!(local_apic_address as u64);
     kprint!("\n");
 
     let mut offset: u64 = 36 + 8;
@@ -449,23 +446,9 @@ fn parse_madt(addr: u64) -> u64 {
                 let apic_id = unsafe { *addr_of!(e.apic_id) };
                 let flags = unsafe { read_unaligned(addr_of!(e.flags)) };
                 kprint!("CPU apic_id=");
-                unsafe {
-                    (&raw mut CONSOLE)
-                        .as_mut()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .write_hex(apic_id as u64);
-                }
+                write_hex!(apic_id as u64);
                 kprint!(" flags=");
-                unsafe {
-                    (&raw mut CONSOLE)
-                        .as_mut()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .write_hex(flags as u64);
-                }
+                write_hex!(flags as u64);
                 kprint!("\n");
             }
             1 => {
@@ -479,23 +462,9 @@ fn parse_madt(addr: u64) -> u64 {
                     }
                 }
                 kprint!("IO APIC id=");
-                unsafe {
-                    (&raw mut CONSOLE)
-                        .as_mut()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .write_hex(io_apic_id as u64);
-                }
+                write_hex!(io_apic_id as u64);
                 kprint!(" addr=");
-                unsafe {
-                    (&raw mut CONSOLE)
-                        .as_mut()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .write_hex(io_apic_address as u64);
-                }
+                write_hex!(io_apic_address as u64);
                 kprint!("\n");
             }
             2 => {
@@ -513,8 +482,4 @@ fn parse_madt(addr: u64) -> u64 {
         offset += entry_length as u64;
     }
     local_apic_address as u64
-}
-
-fn parse_hpet(entry_base: u64) -> u64 {
-    unsafe { read_unaligned((entry_base + 44) as *const u64) }
 }

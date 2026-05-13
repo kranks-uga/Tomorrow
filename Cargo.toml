@@ -5,7 +5,7 @@ edition = "2021"
 build = "build.rs"
 
 [dependencies]
-# пока пусто
+pc-keyboard = { version = "0.7", default-features = false }
 
 [profile.dev]
 panic = "abort"
