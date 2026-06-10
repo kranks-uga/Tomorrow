@@ -69,6 +69,16 @@ pub unsafe fn alloc() -> u64 {
     panic!("PMM: out of memory");
 }
 
+pub fn free_pages() -> u64 {
+    let mut free = 0u64;
+    unsafe {
+        for idx in 0..32768 {
+            free += BITMAP[idx].count_zeros() as u64;
+        }
+    }
+    free
+}
+
 fn mark_free(addr: u64) {
     let page = (addr / 4096) as usize;
     let idx = page / 64;

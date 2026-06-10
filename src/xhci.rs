@@ -530,6 +530,11 @@ unsafe fn queue_hid_transfer(ep_idx: u64) {
 
     HID_TR_ENQ += 1;
     if HID_TR_ENQ >= 31 {
+        // Обновляем cycle-бит Link TRB под текущий проход. Без этого на втором
+        // витке (PCS уже инвертирован) Link остаётся с прежним cycle → mismatch,
+        // контроллер встаёт на Link TRB — клавиатура «умирает» после ~62 transfer.
+        let link = (HID_TR_RING + 31 * 16) as *mut Trb;
+        (*link).control = TRB_LINK | (1 << 1) | HID_TR_PCS;
         HID_TR_ENQ = 0;
         HID_TR_PCS ^= 1;
     }
@@ -569,12 +574,8 @@ pub unsafe fn poll_hid() {
                 continue;
             }
             if let Some(ch) = hid_keycode_to_char(keycode, shift) {
-                (&raw mut crate::CONSOLE)
-                    .as_mut()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .write_byte(ch);
+                // Ввод идёт в шелл — он копит строку и сам эхо-печатает символ.
+                crate::shell::on_char(ch);
             }
         }
     }
@@ -628,6 +629,7 @@ fn hid_keycode_to_char(code: u8, shift: bool) -> Option<u8> {
         (0x26, b'9', b'('),
         (0x27, b'0', b')'),
         (0x28, b'\n', b'\n'),
+        (0x2A, 0x08, 0x08), // Backspace
         (0x2C, b' ', b' '),
         (0x2D, b'-', b'_'),
         (0x2E, b'=', b'+'),

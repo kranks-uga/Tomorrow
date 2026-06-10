@@ -46,6 +46,33 @@ impl Console {
         }
     }
 
+    pub fn backspace(&mut self) {
+        if self.cx == 0 && self.cy == 0 {
+            return; // в самом начале — стирать нечего
+        }
+        if self.cx > 0 {
+            self.cx -= 1;
+        } else {
+            self.cy -= 1;
+            self.cx = self.width / GLYPH_W - 1;
+        }
+        // затереть символ на новой позиции: пробел в шрифте — пустой глиф,
+        // draw_char(' ') не сбросит ни одного пикселя, поэтому заливаем всю
+        // ячейку фоновым цветом вручную.
+        let x0 = self.cx * GLYPH_W;
+        let y0 = self.cy * GLYPH_H;
+        let stride = self.pitch / 4;
+        for row in 0..GLYPH_H {
+            for col in 0..GLYPH_W {
+                let px = x0 + col;
+                let py = y0 + row;
+                unsafe {
+                    *self.fb.add((py * stride + px) as usize) = 0x000000;
+                }
+            }
+        }
+    }
+
     pub fn clear(&mut self) {
         let pixels = self.pitch / 4 * self.height;
         for i in 0..pixels {

@@ -20,6 +20,7 @@ mod pic;
 mod pmm;
 mod process;
 mod scheduler;
+mod shell;
 mod syscall;
 mod tss;
 mod vmm;
@@ -456,6 +457,11 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             .add_process(proc_b);
         kprint!("Scheduler ok\n");
         SCHEDULER_READY = true;
+        // Шелл должен подняться ДО старта ring3: start_first_process_ring3
+        // не возвращается (iretq), поэтому после него код недостижим. Ввод
+        // шелла обрабатывается в контексте прерываний (IRQ1 / poll_hid),
+        // так что работает параллельно с пользовательскими процессами.
+        shell::init();
         scheduler::start_first_process_ring3();
     }
 

@@ -53,14 +53,10 @@ pub unsafe extern "C" fn keyboard_irq_handler() {
                 if let Some(key) = kb.process_keyevent(key_event) {
                     match key {
                         DecodedKey::Unicode(c) => {
-                            // Печатаем только ASCII символы
+                            // ASCII (включая '\n' и backspace 0x08) отдаём шеллу,
+                            // он сам копит строку и эхо-печатает символ.
                             if (c as u32) < 128 {
-                                (&raw mut crate::CONSOLE)
-                                    .as_mut()
-                                    .unwrap()
-                                    .as_mut()
-                                    .unwrap()
-                                    .write_byte(c as u8);
+                                crate::shell::on_char(c as u8);
                             }
                         }
                         DecodedKey::RawKey(_) => {}
