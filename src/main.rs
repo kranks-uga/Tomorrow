@@ -26,7 +26,23 @@ mod vmm;
 mod xhci;
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    // В debug-сборке компилятор вставляет скрытые panic-ветки (unwrap, проверки
+    // переполнения, индексация). Молчащий loop {} превращал любую такую панику
+    // в «зависание на последней печатной строке». Печатаем место паники, чтобы
+    // видеть file:line прямо на экране.
+    unsafe {
+        if let Some(console) = (&raw mut CONSOLE).as_mut().and_then(|c| c.as_mut()) {
+            console.write_str("\nPANIC");
+            if let Some(loc) = info.location() {
+                console.write_str(" at ");
+                console.write_str(loc.file());
+                console.write_byte(b':');
+                console.write_dec(loc.line() as u64);
+            }
+            console.write_byte(b'\n');
+        }
+    }
     loop {}
 }
 
@@ -141,6 +157,10 @@ pub static mut LAPIC_BASE: u64 = 0;
 static mut TICKS: u64 = 0;
 static mut TIMER_GSI: u8 = 0;
 static mut SCHEDULER_READY: bool = false;
+// Сторож GDT[3]: последнее замеченное значение дескриптора user-data.
+// Печатаем только при ИЗМЕНЕНИИ — увидим эталон 0x00CFF2000000FFFF один раз
+// и затем точный тик, на котором его кто-то затирает (→ #GP 0x18).
+static mut GDT3_LAST: u64 = 0;
 
 #[repr(C)]
 struct SavedRegs {
@@ -165,6 +185,22 @@ struct SavedRegs {
 pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const scheduler::Context {
     TICKS += 1;
     lapic::eoi(LAPIC_BASE);
+
+    // Опрос USB HID-клавиатуры. Внутри стоит guard HID_READY — если xHCI
+    // не инициализирован, вызов мгновенно возвращается.
+    xhci::poll_hid();
+
+    // Сторож GDT[3]: проверяем КАЖДЫЙ тик (в т.ч. сразу после poll_hid),
+    // печатаем только когда значение поменялось.
+    let g3 = tss::gdt_user_data();
+    if g3 != GDT3_LAST {
+        GDT3_LAST = g3;
+        kprint!("GDT3=");
+        write_hex!(g3);
+        kprint!(" t=");
+        write_hex!(TICKS);
+        kprint!("\n");
+    }
 
     if !SCHEDULER_READY || TICKS % 5 != 0 {
         return core::ptr::null();
@@ -399,9 +435,9 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
         kprint!("xhci bar: ");
         write_hex!(bar_phys);
         kprint!("\n");
-        // unsafe {
-        //     xhci::init(bar_phys);
-        // }
+        unsafe {
+            xhci::init(bar_phys);
+        }
     } else {
         kprint!("xhci not found\n");
     }

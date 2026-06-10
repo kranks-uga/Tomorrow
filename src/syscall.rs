@@ -34,10 +34,11 @@ extern "C" {
 
 pub fn init() {
     unsafe {
-        // Выделяем отдельную страницу для ядерного стека syscall-обработчика
-        const KERNEL_VIRT: u64 = 0xFFFF800000000000;
+        // Выделяем отдельную страницу для ядерного стека syscall-обработчика.
+        // Адресуем через identity map (phys==virt), а НЕ через higher-half:
+        // higher-half покрывает лишь первые 2 MB → стек за этой границей даёт #PF/#DF.
         let page = pmm::alloc();
-        SYSCALL_KERNEL_RSP = page + KERNEL_VIRT + 4096; // вершина страницы
+        SYSCALL_KERNEL_RSP = page + 4096; // вершина страницы
 
         // Включаем SCE бит в EFER
         core::arch::asm!(
@@ -53,7 +54,10 @@ pub fn init() {
         // LSTAR — адрес обработчика
         write_msr(MSR_LSTAR, syscall_entry as *const () as u64);
 
-        // STAR: [47:32]=0x0008 kernel CS, [63:48]=0x0018 user SS base
+        // STAR: [47:32]=0x0008 — SYSCALL грузит kernel CS=0x08, SS=0x10.
+        // [63:48]=0x0010 — на SYSRET контроллер берёт user CS=base+16=0x20 (|RPL3=0x23),
+        // user SS=base+8=0x18 (|RPL3=0x1B). Раскладка GDT: 0x08 kCS, 0x10 kSS,
+        // 0x18 uSS, 0x20 uCS.
         write_msr(MSR_STAR, 0x0010_0008_0000_0000);
 
         // SYSCALL_MASK — сбрасывает IF при входе

@@ -44,15 +44,32 @@ pub struct TssDescriptor {
 // 0x00: null, 0x08: kernel code, 0x10: kernel data,
 // 0x18: user data (DPL=3), 0x20: user code (DPL=3),
 // 0x28+0x30: TSS (16 байт)
-static mut GDT: [u64; 7] = [
-    0x0000000000000000, // 0x00: null
-    0x00AF9A000000FFFF, // 0x08: kernel code  (DPL=0, L=1, D=0)
-    0x00CF92000000FFFF, // 0x10: kernel data  (DPL=0, L=0, D=1)
-    0x00CFF2000000FFFF, // 0x18: user data    (DPL=3, L=0, D=1) ← SS для SYSRET = 0x1B
-    0x00AFFA000000FFFF, // 0x20: user code    (DPL=3, L=1, D=0) ← CS для SYSRET = 0x23
-    0x0000000000000000, // 0x28: TSS low  (заполним в init)
-    0x0000000000000000, // 0x30: TSS high (заполним в init)
-];
+//
+// GDT занимает СОБСТВЕННУЮ страницу 4 КБ (align 4096 + размер = ровно страница):
+// раньше она лежала в .data вплотную к SCHEDULER (0x141000 / 0x141038), и любая
+// дикая запись рядом могла испортить дескриптор → #GP 0x18 при загрузке SS.
+#[repr(C, align(4096))]
+pub struct GdtPage {
+    pub entries: [u64; 512],
+}
+
+const fn build_gdt() -> [u64; 512] {
+    let mut g = [0u64; 512];
+    g[1] = 0x00AF9A000000FFFF; // 0x08: kernel code (DPL=0, L=1, D=0)
+    g[2] = 0x00CF92000000FFFF; // 0x10: kernel data (DPL=0, L=0, D=1)
+    g[3] = 0x00CFF2000000FFFF; // 0x18: user data   (DPL=3, L=0, D=1) ← SS sysret = 0x1B
+    g[4] = 0x00AFFA000000FFFF; // 0x20: user code   (DPL=3, L=1, D=0) ← CS sysret = 0x23
+    // g[5], g[6] — TSS дескриптор (16 байт), заполняется в init()
+    g
+}
+
+pub static mut GDT: GdtPage = GdtPage { entries: build_gdt() };
+
+/// Текущее значение дескриптора user-data (GDT[3], phys 0x..18) — для сторожа
+/// порчи GDT. Если оно отличается от 0x00CFF2000000FFFF — кто-то затёр GDT.
+pub fn gdt_user_data() -> u64 {
+    unsafe { core::ptr::addr_of!(GDT.entries).cast::<u64>().add(3).read() }
+}
 
 #[repr(C, packed)]
 struct GdtPtr {
@@ -71,16 +88,16 @@ pub unsafe fn init(kernel_stack: u64) {
 
     // TSS дескриптор — 16 байт (два слота GDT)
     let gdt = &raw mut GDT;
-    (*gdt)[5] = (limit & 0xFFFF)
+    (*gdt).entries[5] = (limit & 0xFFFF)
         | ((base & 0xFFFFFF) << 16)
         | (0x89u64 << 40)        // Present + TSS type
         | (((limit >> 16) & 0xF) << 48)
         | (((base >> 24) & 0xFF) << 56);
-    (*gdt)[6] = (base >> 32) & 0xFFFFFFFF;
+    (*gdt).entries[6] = (base >> 32) & 0xFFFFFFFF;
 
-    // загружаем новый GDT
+    // загружаем новый GDT (limit покрывает записи 0..6 включительно)
     let gdt_ptr = GdtPtr {
-        limit: (core::mem::size_of::<[u64; 7]>() - 1) as u16,
+        limit: (7 * 8 - 1) as u16,
         base: core::ptr::addr_of!(GDT) as u64,
     };
     core::arch::asm!("lgdt [{}]", in(reg) &gdt_ptr);

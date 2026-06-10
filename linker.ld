@@ -27,15 +27,18 @@ SECTIONS {
     }
 
     .rodata ALIGN(4096) : AT(ADDR(.rodata) - KERNEL_VIRT) {
-        *(.rodata .rodata.*)
+        /* .lrodata.* — large code model: иначе orphan-секции уезжают
+           за _kernel_end и PMM их не резервирует */
+        *(.rodata .rodata.* .lrodata .lrodata.*)
     }
 
     .data ALIGN(4096) : AT(ADDR(.data) - KERNEL_VIRT) {
-        *(.data .data.*)
+        *(.data .data.* .ldata .ldata.*)
+        *(.data.rel.ro .data.rel.ro.* .got .got.plt)
     }
 
     .bss ALIGN(4096) : AT(ADDR(.bss) - KERNEL_VIRT) {
-        *(.bss .bss.*)
+        *(.bss .bss.* .lbss .lbss.*)
         *(COMMON)
     }
 

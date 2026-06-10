@@ -1,3 +1,10 @@
+# Сборочные артефакты Rust
 /target
+
+# Образ и собранное ядро
 tomorrow.iso
 /iso/boot/tomorrow.elf
+
+# Прочее
+*.o
+*.log

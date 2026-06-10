@@ -27,8 +27,11 @@ impl Process {
         let user_stack_phys = unsafe { pmm::alloc() };
 
         const KERNEL_VIRT: u64 = 0xFFFF800000000000;
-        let stack_virt = stack + KERNEL_VIRT;
-        let stack_top = (stack_virt + 4096) & !0xF;
+        // Стек ядра адресуем через identity map (phys==virt, 0-1TB RW supervisor),
+        // НЕ через higher-half: higher-half в boot.s покрывает лишь первые 2 MB,
+        // а страницы стека после аллокаций xHCI уходят за эту границу → #PF/#DF.
+        // (TSS-стек в main.rs тоже физический — здесь приводим к тому же инварианту.)
+        let stack_top = (stack + 4096) & !0xF;
 
         // кладём entry point на вершину kernel stack
         unsafe {
@@ -39,13 +42,21 @@ impl Process {
         // маппим user stack с флагом USER
         // user stack — за пределами identity-map (0-1TB покрыта large pages)
         // pml4[2] пустой → vmm::map создаст нормальные 4KB таблицы
-        let user_stack_virt: u64 = 0x0000_0100_0000_0000;
+        //
+        // Адрес обязан зависеть от pid: все процессы делят один pml4/CR3, и
+        // map() второго процесса иначе перетрёт маппинг первого (один и тот же
+        // virt → разные phys, «последний выигрывает») → процессы начинают
+        // делить физическую страницу стека. Смещение pid*4KB остаётся внутри
+        // pml4[2], не задевая соседние записи.
+        let user_stack_virt: u64 = 0x0000_0100_0000_0000 + pid * 0x1000;
 
         let fn_phys = (entry - KERNEL_VIRT) & !0xFFF;
         let fn_offset = entry & 0xFFF;
         // 0x400000 попадает в 1GB large page boot-таблицы (pml4[0]),
-        // vmm не может создать 4KB внутри неё — берём pml4[4] (свободен)
-        let user_code_virt: u64 = 0x0000_0200_0000_0000;
+        // vmm не может создать 4KB внутри неё — берём pml4[4] (свободен).
+        // pid-смещение — по той же причине, что и для user_stack_virt: иначе
+        // второй процесс перетрёт кодовую страницу первого.
+        let user_code_virt: u64 = 0x0000_0200_0000_0000 + pid * 0x1000;
 
         unsafe {
             extern "C" {
