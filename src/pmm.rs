@@ -69,6 +69,32 @@ pub unsafe fn alloc() -> u64 {
     panic!("PMM: out of memory");
 }
 
+pub unsafe fn free(addr: u64) {
+    let addr = addr & !0xFFF;
+
+    // 1. Не отдовать обратно зарезервированое: 1 Мб и страницы ядра.
+    // Иначе alloc положит процес на систему(летально)
+    let kstart = core::ptr::addr_of!(_kernel_start) as u64 & !0xFFF;
+    let kend = (core::ptr::addr_of!(_kernel_end) as u64 + 0xFFF) & !0xFFF;
+    if addr < 0x100000 || (addr >= kstart && addr < kend) {
+        return;
+    }
+
+    // 2. Защита от double-free: если бит уже 0 (свободна) — выходим.
+    // Если будет одна страница на два процеса будет плохо
+    let page = (addr / 4096) as usize;
+    let idx = page / 64;
+    let bit = page % 64;
+    if idx >= 32768 {
+        return;
+    }
+    if BITMAP[idx] & (1u64 << bit) == 0 {
+        return; // уже свободна
+    }
+
+    mark_free(addr);
+}
+
 pub fn free_pages() -> u64 {
     let mut free = 0u64;
     unsafe {

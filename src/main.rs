@@ -252,7 +252,7 @@ extern "C" {
 }
 
 #[unsafe(naked)]
-extern "C" fn process_a() -> ! {
+pub extern "C" fn process_a() -> ! {
     core::arch::naked_asm!(
         ".intel_syntax noprefix",
         "lea rsi, [rip + 1f]",
@@ -267,7 +267,7 @@ extern "C" fn process_a() -> ! {
 }
 
 #[unsafe(naked)]
-extern "C" fn process_b() -> ! {
+pub extern "C" fn process_b() -> ! {
     core::arch::naked_asm!(
         ".intel_syntax noprefix",
         "lea rsi, [rip + 1f]",

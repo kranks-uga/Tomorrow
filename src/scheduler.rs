@@ -1,3 +1,4 @@
+use crate::pmm;
 use crate::process::{self, Process, ProcessState};
 use crate::CONSOLE;
 
@@ -19,11 +20,11 @@ pub struct Context {
     pub r13: u64,
     pub r14: u64,
     pub r15: u64,
-    pub rip: u64,    // 0x80
-    pub rflags: u64, // 0x88
-    pub cs: u64,     // 0x90
-    pub ss: u64,     // 0x98
-    pub cr3: u64,    // 0xA0
+    pub rip: u64,          // 0x80
+    pub rflags: u64,       // 0x88
+    pub cs: u64,           // 0x90
+    pub ss: u64,           // 0x98
+    pub cr3: u64,          // 0xA0
     pub kernel_stack: u64, // 0xA8
 }
 
@@ -38,6 +39,19 @@ pub static mut SCHEDULER: Scheduler = Scheduler {
     current: 0,
     count: 0,
 };
+
+// Монотонный счётчик pid. Стартовые процессы заняли 1 и 2, поэтому начинаем с 3.
+// Только растёт и не переиспользует значения: виртуальные адреса user-стека и
+// кода в Process::new зависят от pid (+ pid*0x1000), reap не размаппивает их —
+// повторный pid мог бы наложиться на ещё живущий маппинг.
+static mut NEXT_PID: u64 = 3;
+
+/// Выдать следующий свободный pid.
+pub unsafe fn next_pid() -> u64 {
+    let pid = NEXT_PID;
+    NEXT_PID += 1;
+    pid
+}
 
 impl Scheduler {
     pub fn new() -> Self {
@@ -78,6 +92,28 @@ impl Scheduler {
         }
 
         None
+    }
+
+    ///Освободить слоты процессов помеченых Dead (кроме текущего)
+    pub unsafe fn reap(&mut self) {
+        for i in 0..64 {
+            if i == self.current {
+                continue;
+            }
+
+            if let Some(p) = &self.processes[i] {
+                // Жнём только мёртвые процессы — живые трогать нельзя!
+                if p.state == ProcessState::Dead {
+                    // Возвращаем ФИЗИЧЕСКИЕ страницы стеков (базовые адреса от alloc,
+                    // НЕ вершины). Кодовую страницу (fn_phys) не трогаем — это код ядра.
+                    pmm::free(p.kernel_stack_phys);
+                    pmm::free(p.user_stack_phys);
+                    // Освобождаем слот в самом планировщике
+                    self.processes[i] = None;
+                    self.count -= 1;
+                }
+            }
+        }
     }
 }
 

@@ -18,6 +18,11 @@ pub struct Process {
     pub state: ProcessState,
     pub kernel_stack: u64,
     pub user_stack: u64,
+    // Базовые ФИЗИЧЕСКИЕ адреса страниц от pmm::alloc — нужны, чтобы reap()
+    // мог вернуть их в PMM. kernel_stack/user_stack — это вершины (virt),
+    // освобождать по ним нельзя.
+    pub kernel_stack_phys: u64,
+    pub user_stack_phys: u64,
     pub context: Context,
 }
 
@@ -89,6 +94,8 @@ impl Process {
             state: ProcessState::Running,
             kernel_stack: stack_top,
             user_stack: user_stack_top,
+            kernel_stack_phys: stack,
+            user_stack_phys,
             context: Context {
                 rax: 0,
                 rbx: 0,

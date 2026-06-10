@@ -1,5 +1,5 @@
 use crate::console::Console;
-use crate::process::ProcessState;
+use crate::process::{Process, ProcessState};
 use crate::{pmm, scheduler, CONSOLE, TICKS};
 
 const PROMPT: &str = "User@Tomorrow> ";
@@ -81,6 +81,10 @@ fn execute() {
         cmd_ticks();
     } else if eq(cmd, b"ps") {
         cmd_ps();
+    } else if eq(cmd, b"spawn") {
+        cmd_spawn(args);
+    } else if eq(cmd, b"kill") {
+        cmd_kill(args);
     } else if eq(cmd, b"mem") {
         cmd_mem();
     } else if eq(cmd, b"reboot") {
@@ -100,6 +104,8 @@ fn cmd_help() {
          \x20 echo <text>   print text\n\
          \x20 ticks         show timer tick count\n\
          \x20 ps            list processes\n\
+         \x20 spawn <a|b>   create a new demo process (a or b)\n\
+         \x20 kill <pid>    terminate a process by pid\n\
          \x20 mem           show free physical memory\n\
          \x20 reboot        restart the machine\n",
     );
@@ -134,6 +140,95 @@ fn cmd_ps() {
     console().write_str("total: ");
     console().write_dec(sched.count as u64);
     console().write_str("\n");
+}
+
+fn cmd_spawn(args: &[u8]) {
+    // Выбираем демо-код по имени процесса.
+    let entry = if eq(args, b"a") {
+        crate::process_a as *const () as u64
+    } else if eq(args, b"b") {
+        crate::process_b as *const () as u64
+    } else {
+        console().write_str("usage: spawn <a|b>\n");
+        return;
+    };
+
+    let sched = unsafe { (&raw mut scheduler::SCHEDULER).as_mut().unwrap() };
+
+    // add_process паникует при переполнении — проверяем заранее.
+    if sched.count >= 64 {
+        console().write_str("scheduler full\n");
+        return;
+    }
+
+    let pid = unsafe { scheduler::next_pid() };
+    let proc = Process::new(pid, 0b11, 0, entry);
+    sched.add_process(proc);
+
+    console().write_str("spawned pid ");
+    console().write_dec(pid);
+    console().write_str("\n");
+}
+
+fn cmd_kill(args: &[u8]) {
+    let pid = match parse_dec(args) {
+        Some(p) => p,
+        None => {
+            console().write_str("usage: kill <pid>\n");
+            return;
+        }
+    };
+
+    let sched = unsafe { (&raw mut scheduler::SCHEDULER).as_mut().unwrap() };
+
+    // Ищем процесс по pid и помечаем Dead. Сам по себе Dead уже исключает
+    // процесс из планировщика (schedule выбирает только Running).
+    let mut found = false;
+    for slot in sched.processes.iter_mut() {
+        if let Some(p) = slot {
+            if p.pid == pid {
+                found = true;
+                if p.state == ProcessState::Dead {
+                    console().write_str("already dead\n");
+                    return;
+                }
+                p.state = ProcessState::Dead;
+                break;
+            }
+        }
+    }
+
+    if !found {
+        console().write_str("no such pid\n");
+        return;
+    }
+
+    // Сразу освобождаем мёртвые слоты и их физические страницы.
+    // reap пропускает текущий процесс (его kernel-стек сейчас используется),
+    // так что если убили current — слот освободится позже, на переключении.
+    unsafe {
+        sched.reap();
+    }
+
+    console().write_str("killed pid ");
+    console().write_dec(pid);
+    console().write_str("\n");
+}
+
+/// Парсит десятичное число из байтового среза. None — если пусто или есть
+/// не-цифры. Без alloc, для аргументов шелла.
+fn parse_dec(s: &[u8]) -> Option<u64> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut n: u64 = 0;
+    for &c in s {
+        if !c.is_ascii_digit() {
+            return None;
+        }
+        n = n.checked_mul(10)?.checked_add((c - b'0') as u64)?;
+    }
+    Some(n)
 }
 
 fn cmd_mem() {
