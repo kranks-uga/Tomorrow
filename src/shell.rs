@@ -3,6 +3,7 @@ use crate::process::{Process, ProcessState};
 use crate::{pmm, scheduler, CONSOLE, TICKS};
 
 const PROMPT: &str = "User@Tomorrow> ";
+const PROMPT_LEN: usize = PROMPT.len();
 const BUF_LEN: usize = 128;
 
 // Накопитель текущей строки. Ввод приходит из прерываний (PS/2 IRQ1 и
@@ -28,6 +29,51 @@ pub fn init() {
 
 fn prompt() {
     console().write_str(PROMPT);
+}
+
+/// Перерисовывает видимую строку ввода: приглашение + накопленный буфер.
+fn redraw_line() {
+    let c = console();
+    c.write_str(PROMPT);
+    for &b in unsafe { &LINE[..LEN] } {
+        c.write_byte(b);
+    }
+}
+
+/// Вывод пользовательских процессов (SYS_WRITE, fd=1) проходит сюда.
+///
+/// Программный вывод и интерактивная строка ввода делят одну консоль и общий
+/// курсор. Без разделения вывод процесса вклинивается прямо в набираемую строку
+/// — символы пользователя и программы перемешиваются. Поэтому стираем видимое
+/// приглашение вместе с буфером, печатаем вывод программы (он уходит на свою
+/// строку), затем перерисовываем приглашение и буфер. Строка ввода всегда
+/// остаётся целой внизу экрана.
+pub fn program_output(bytes: &[u8]) {
+    // Шелл ещё не поднялся (ранний boot-вывод) — пишем напрямую.
+    if unsafe { !READY } {
+        write_bytes(bytes);
+        return;
+    }
+
+    unsafe {
+        // SYSCALL уже маскирует IF, так что on_char (контекст IRQ) и poll_hid
+        // не вклинятся между стиранием и перерисовкой. Сохраняем/восстанавливаем
+        // флаги на случай вызова из контекста с включёнными прерываниями —
+        // popfq вернёт ровно прежнее состояние IF, лишних прерываний не включит.
+        let flags: u64;
+        core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(nomem));
+        core::arch::asm!("cli", options(nomem, nostack));
+
+        // Стираем видимое приглашение + набранный буфер: курсор вернётся в начало.
+        for _ in 0..(PROMPT_LEN + LEN) {
+            console().backspace();
+        }
+
+        write_bytes(bytes);
+        redraw_line();
+
+        core::arch::asm!("push {}", "popfq", in(reg) flags, options(nomem));
+    }
 }
 
 /// Единая точка приёма символа от любого драйвера клавиатуры.
@@ -89,6 +135,8 @@ fn execute() {
         cmd_mem();
     } else if eq(cmd, b"reboot") {
         cmd_reboot();
+    } else if eq(cmd, b"shutdown") || eq(cmd, b"poweroff") {
+        cmd_shutdown();
     } else {
         console().write_str("unknown command: ");
         write_bytes(cmd);
@@ -107,8 +155,52 @@ fn cmd_help() {
          \x20 spawn <a|b>   create a new demo process (a or b)\n\
          \x20 kill <pid>    terminate a process by pid\n\
          \x20 mem           show free physical memory\n\
-         \x20 reboot        restart the machine\n",
+         \x20 reboot        restart the machine\n\
+         \x20 shutdown / poweroff      power off via ACPI\n",
     );
+}
+
+fn cmd_shutdown() {
+    // SLP_TYPa добыт из \_S5, PM1x_CNT — из FADT (см. main.rs). Запись
+    // (SLP_TYPx << 10) | SLP_EN(бит13) в PM1x_CNT переводит платформу в S5.
+    let (pm1a, pm1b, slp_a, slp_b) = unsafe {
+        (
+            crate::PM1A_CNT,
+            crate::PM1B_CNT,
+            crate::SLP_TYPA,
+            crate::SLP_TYPB,
+        )
+    };
+
+    if pm1a == 0 {
+        console().write_str("ACPI PM1a_CNT unknown — cannot power off\n");
+        return;
+    }
+
+    console().write_str("powering off...\n");
+    unsafe {
+        core::arch::asm!("cli");
+        let val = ((slp_a as u16) << 10) | 0x2000;
+        core::arch::asm!(
+            "out dx, ax",
+            in("dx") pm1a,
+            in("ax") val,
+            options(nomem, nostack),
+        );
+        if pm1b != 0 {
+            let valb = ((slp_b as u16) << 10) | 0x2000;
+            core::arch::asm!(
+                "out dx, ax",
+                in("dx") pm1b,
+                in("ax") valb,
+                options(nomem, nostack),
+            );
+        }
+        // Не выключилось (ACPI не включён / неверный SLP_TYP) — зависаем.
+        loop {
+            core::arch::asm!("hlt");
+        }
+    }
 }
 
 fn cmd_echo(args: &[u8]) {

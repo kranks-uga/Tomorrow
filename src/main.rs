@@ -163,6 +163,13 @@ static mut SCHEDULER_READY: bool = false;
 // и затем точный тик, на котором его кто-то затирает (→ #GP 0x18).
 static mut GDT3_LAST: u64 = 0;
 
+pub static mut PM1A_CNT: u16 = 0;
+pub static mut PM1B_CNT: u16 = 0;
+pub static mut DSDT_ADDR: u64 = 0;
+// SLP_TYPx из \_S5 в DSDT — значение режима сна для записи в PM1x_CNT.
+pub static mut SLP_TYPA: u8 = 0;
+pub static mut SLP_TYPB: u8 = 0;
+
 #[repr(C)]
 struct SavedRegs {
     rax: u64,
@@ -408,6 +415,34 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 }
             }
 
+            if sig == b"FACP" {
+                unsafe {
+                    let pm1a_cnt = read_unaligned((entry_addr + 64) as *const u32) as u16;
+                    let pm1b_cnt = read_unaligned((entry_addr + 68) as *const u32) as u16;
+                    let dsdt = read_unaligned((entry_addr + 40) as *const u32) as u64;
+
+                    kprint!("PM1a_CNT: ");
+                    write_hex!(pm1a_cnt as u64);
+                    kprint!("\n");
+
+                    // сохранить в статики для команды shutdown
+                    PM1A_CNT = pm1a_cnt;
+                    PM1B_CNT = pm1b_cnt;
+                    DSDT_ADDR = dsdt;
+
+                    // SLP_TYPa/b лежат не в FADT, а в \_S5 внутри DSDT (AML).
+                    if let Some((a, b)) = parse_s5(dsdt) {
+                        SLP_TYPA = a;
+                        SLP_TYPB = b;
+                        kprint!("SLP_TYPa: ");
+                        write_hex!(a as u64);
+                        kprint!("\n");
+                    } else {
+                        kprint!("_S5 not found\n");
+                    }
+                }
+            }
+
             for b in sig {
                 unsafe {
                     (&raw mut CONSOLE)
@@ -466,6 +501,58 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     }
 
     loop {}
+}
+
+/// Достаёт SLP_TYPa/SLP_TYPb из объекта `\_S5` в DSDT (AML).
+/// `Name(_S5, Package(){ SLP_TYPa, SLP_TYPb, ... })` кодируется как
+/// `'_S5_' PackageOp PkgLength NumElements <elem0> <elem1> ...`.
+fn parse_s5(dsdt: u64) -> Option<(u8, u8)> {
+    if dsdt == 0 {
+        return None;
+    }
+    let base = dsdt as *const u8;
+    let len = unsafe { read_unaligned((dsdt + 4) as *const u32) } as usize;
+
+    let mut i = 0usize;
+    while i + 5 < len {
+        let win = unsafe { core::slice::from_raw_parts(base.add(i), 4) };
+        if win == b"_S5_" {
+            let mut p = i + 4;
+            if unsafe { *base.add(p) } != 0x12 {
+                // не PackageOp — ложное совпадение, ищем дальше
+                i += 1;
+                continue;
+            }
+            p += 1;
+            // PkgLength: старшие 2 бита первого байта — число доп. байтов длины.
+            let lead = unsafe { *base.add(p) };
+            p += 1 + (lead >> 6) as usize;
+            // NumElements
+            p += 1;
+            let a = read_aml_byte(base, &mut p);
+            let b = read_aml_byte(base, &mut p);
+            return Some((a & 7, b & 7));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Читает один маленький целочисленный элемент AML и двигает курсор.
+fn read_aml_byte(base: *const u8, p: &mut usize) -> u8 {
+    let op = unsafe { *base.add(*p) };
+    *p += 1;
+    match op {
+        0x00 => 0, // ZeroOp
+        0x01 => 1, // OneOp
+        0x0A => {
+            // BytePrefix — значение в следующем байте
+            let v = unsafe { *base.add(*p) };
+            *p += 1;
+            v
+        }
+        _ => op, // редкий случай: значение закодировано самим опкодом
+    }
 }
 
 fn parse_madt(addr: u64) -> u64 {

@@ -84,15 +84,10 @@ pub unsafe extern "C" fn syscall_handler(
 
 unsafe fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
     if fd == 1 {
-        for i in 0..len {
-            let byte = *buf.add(i as usize);
-            (&raw mut crate::CONSOLE)
-                .as_mut()
-                .unwrap()
-                .as_mut()
-                .unwrap()
-                .write_byte(byte);
-        }
+        // Вывод идёт через шелл, а не напрямую в консоль: иначе он вклинивается
+        // в набираемую строку ввода (см. shell::program_output).
+        let slice = core::slice::from_raw_parts(buf, len as usize);
+        crate::shell::program_output(slice);
         return len;
     }
     u64::MAX
