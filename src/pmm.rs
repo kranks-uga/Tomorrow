@@ -128,3 +128,12 @@ fn mark_used(addr: u64) {
         BITMAP[idx] |= 1u64 << bit;
     }
 }
+
+pub unsafe fn reserve(start: u64, end: u64) {
+    let mut addr = start & !0xFFF;
+    let end = (end + 0xFFF) & !0xFFF;
+    while addr < end {
+        mark_used(addr);
+        addr += 4096;
+    }
+}

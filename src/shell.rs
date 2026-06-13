@@ -1,3 +1,5 @@
+use core::ptr::null;
+
 use crate::console::Console;
 use crate::process::{Process, ProcessState};
 use crate::{pmm, scheduler, CONSOLE, TICKS};
@@ -137,6 +139,10 @@ fn execute() {
         cmd_reboot();
     } else if eq(cmd, b"shutdown") || eq(cmd, b"poweroff") {
         cmd_shutdown();
+    } else if eq(cmd, b"module") {
+        mods();
+    } else if eq(cmd, b"ls") {
+        cmd_ls();
     } else {
         console().write_str("unknown command: ");
         write_bytes(cmd);
@@ -156,7 +162,9 @@ fn cmd_help() {
          \x20 kill <pid>    terminate a process by pid\n\
          \x20 mem           show free physical memory\n\
          \x20 reboot        restart the machine\n\
-         \x20 shutdown / poweroff      power off via ACPI\n",
+         \x20 shutdown / poweroff      power off via ACPI\n\
+         \x20 module         read mod_start and mod_end \n\
+         \x20 ls             show files\n",
     );
 }
 
@@ -387,6 +395,53 @@ fn cmd_reboot() {
     }
 }
 
+fn cmd_ls() {
+    let base = unsafe { crate::MOD_START };
+    let mut off: u64 = 0;
+
+    loop {
+        // внешний: по файлам
+        let name0 = unsafe { *((base + off) as *const u8) };
+        if name0 == 0 {
+            break; // пустое имя = конец архива
+        }
+
+        // --- печать имени: внутренний цикл ---
+        let mut i: u64 = 0;
+        loop {
+            let c = unsafe { *((base + off + i) as *const u8) };
+            if c == 0 || i >= 100 {
+                // NUL или предел поля name
+                break;
+            }
+            console().write_byte(c);
+            i += 1;
+        }
+
+        // --- размер ---
+        let size = parse_octal(base, off + 124, 12);
+        console().write_str(" ");
+        console().write_dec(size);
+        console().write_str("\n");
+
+        // --- переход к следующему header ---
+        off += 512 + ((size + 511) & !511);
+    }
+}
+
+fn mods() {
+    console().write_str("mod_start=");
+    unsafe {
+        console().write_dec(crate::MOD_START);
+    }
+    console().write_str("\n");
+    console().write_str("mod_end=");
+    unsafe {
+        console().write_dec(crate::MOD_END);
+    }
+    console().write_str("\n");
+}
+
 /// Короткая задержка ввода-вывода: запись в неиспользуемый порт 0x80.
 #[inline]
 unsafe fn io_delay() {
@@ -430,4 +485,16 @@ fn write_bytes(s: &[u8]) {
     for &b in s {
         console().write_byte(b);
     }
+}
+
+fn parse_octal(base: u64, off: u64, len: u64) -> u64 {
+    let mut result: u64 = 0;
+    for i in 0..len {
+        let c = unsafe { *((base + off + i) as *const u8) };
+        if c < b'0' || c > b'7' {
+            break; // NUL, пробел или мусор — конец числа
+        }
+        result = result * 8 + (c - b'0') as u64;
+    }
+    result
 }

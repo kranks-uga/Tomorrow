@@ -1,4 +1,4 @@
-//authors: Kirill Repin, Denis Ansuk, Rusina Lilianna, Filipp Razanov
+//author: Kirill Repin
 
 #![no_std]
 #![no_main]
@@ -66,6 +66,14 @@ struct MbFramebuffer {
     bpp: u8,
     fb_type: u8,
     reserved: u16,
+}
+
+#[repr(C)]
+struct MbModule {
+    typ: u32,
+    size: u32,
+    mod_start: u32,
+    mod_end: u32,
 }
 
 #[repr(C, packed)]
@@ -169,6 +177,9 @@ pub static mut DSDT_ADDR: u64 = 0;
 // SLP_TYPx из \_S5 в DSDT — значение режима сна для записи в PM1x_CNT.
 pub static mut SLP_TYPA: u8 = 0;
 pub static mut SLP_TYPB: u8 = 0;
+
+pub static mut MOD_START: u64 = 0;
+pub static mut MOD_END: u64 = 0;
 
 #[repr(C)]
 struct SavedRegs {
@@ -294,6 +305,8 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     let mut mmap_addr: u64 = 0;
     let mut mmap_size: u32 = 0;
     let mut mmap_entry_size: u32 = 0;
+    let mut mod_start: u64 = 0;
+    let mut mod_end: u64 = 0;
 
     // === Парсим Multiboot2 теги ===
     let mut ptr = (boot_info + 8) as *const Mbtag;
@@ -301,6 +314,11 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
         let tag = unsafe { &*(ptr as *const Mbtag) };
         match tag.typ {
             0 => break,
+            3 => {
+                let m = unsafe { &*(ptr as *const MbModule) };
+                mod_start = m.mod_start as u64;
+                mod_end = m.mod_end as u64;
+            }
             6 => {
                 mmap_addr = ptr as u64;
                 mmap_size = tag.size;
@@ -349,6 +367,9 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     if mmap_addr != 0 {
         unsafe {
             pmm::init(mmap_addr, mmap_size, mmap_entry_size);
+            pmm::reserve(mod_start, mod_end);
+            MOD_START = mod_start;
+            MOD_END = mod_end;
         }
     }
     kprint!("PMM ok\n");
@@ -359,6 +380,12 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
         tss::init(kernel_stack);
     }
     kprint!("TSS ok\n");
+
+    kprint!("module: start=");
+    write_hex!(mod_start);
+    kprint!(" size=");
+    crate::write_hex!((mod_end - mod_start)); // или write_dec, если есть макрос
+    kprint!("\n");
 
     // === HEAP ===
     let heap_start = unsafe { pmm::alloc() }; // identity map — физ. адрес доступен напрямую

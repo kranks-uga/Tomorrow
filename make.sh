@@ -6,6 +6,7 @@ cargo +nightly build -Zbuild-std=core,compiler_builtins \
 
 mkdir -p iso/boot/grub
 cp target/x86_64-unknown-none/debug/tomorrow iso/boot/tomorrow.elf
+cp initrd.tar iso/boot/initrd.tar
 
 cp boot/grub/grub.cfg iso/boot/grub/grub.cfg
 
