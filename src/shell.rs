@@ -1,5 +1,3 @@
-use core::ptr::null;
-
 use crate::console::Console;
 use crate::process::{Process, ProcessState};
 use crate::{pmm, scheduler, CONSOLE, TICKS};
@@ -143,6 +141,8 @@ fn execute() {
         mods();
     } else if eq(cmd, b"ls") {
         cmd_ls();
+    } else if eq(cmd, b"cat") {
+        cmd_cat(args);
     } else {
         console().write_str("unknown command: ");
         write_bytes(cmd);
@@ -164,7 +164,8 @@ fn cmd_help() {
          \x20 reboot        restart the machine\n\
          \x20 shutdown / poweroff      power off via ACPI\n\
          \x20 module         read mod_start and mod_end \n\
-         \x20 ls             show files\n",
+         \x20 ls             show files\n\
+         \x20 cat <file>     print file contents\n",
     );
 }
 
@@ -427,6 +428,55 @@ fn cmd_ls() {
         // --- переход к следующему header ---
         off += 512 + ((size + 511) & !511);
     }
+}
+
+fn cmd_cat(args: &[u8]) {
+    if args.is_empty() {
+        console().write_str("usage: cat <file>\n");
+        return;
+    }
+
+    let base = unsafe { crate::MOD_START };
+    let mut off: u64 = 0;
+
+    loop {
+        let name0 = unsafe { *((base + off) as *const u8) };
+        if name0 == 0 {
+            break;
+        }
+
+        // Побайтово сравниваем имя в tar с args.
+        // tar-имя: null-terminated, поле 100 байт.
+        // args: срез без null.
+        // Совпадение: все байты args совпали И следующий байт tar == 0.
+        let mut match_ = true;
+        for (i, &expected) in args.iter().enumerate() {
+            let got = unsafe { *((base + off + i as u64) as *const u8) };
+            if got != expected {
+                match_ = false;
+                break;
+            }
+        }
+        if match_ {
+            let after = unsafe { *((base + off + args.len() as u64) as *const u8) };
+            match_ = after == 0;
+        }
+
+        let size = parse_octal(base, off + 124, 12);
+
+        if match_ {
+            for j in 0..size {
+                let b = unsafe { *((base + off + 512 + j) as *const u8) };
+                console().write_byte(b);
+            }
+            console().write_str("\n");
+            return;
+        }
+
+        off += 512 + ((size + 511) & !511);
+    }
+
+    console().write_str("file not found\n");
 }
 
 fn mods() {

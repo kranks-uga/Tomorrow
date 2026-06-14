@@ -518,11 +518,13 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             .unwrap()
             .add_process(proc_b);
         kprint!("Scheduler ok\n");
+        // CLI до SCHEDULER_READY: если таймер сработает между READY=true и
+        // первым iretq, он сохранит ядровый RIP в context.rip proc_a и
+        // start_first_process_ring3 прыгнет в ring-3 с ядровым адресом → #PF.
+        // iretq в start_first_process_ring3 кладёт RFLAGS=0x202 (IF=1),
+        // поэтому прерывания включатся сами при входе в user mode.
+        core::arch::asm!("cli", options(nomem, nostack));
         SCHEDULER_READY = true;
-        // Шелл должен подняться ДО старта ring3: start_first_process_ring3
-        // не возвращается (iretq), поэтому после него код недостижим. Ввод
-        // шелла обрабатывается в контексте прерываний (IRQ1 / poll_hid),
-        // так что работает параллельно с пользовательскими процессами.
         shell::init();
         scheduler::start_first_process_ring3();
     }
