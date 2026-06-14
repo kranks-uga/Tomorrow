@@ -60,18 +60,40 @@
 | PS/2 клавиатура | готово |
 | Framebuffer-консоль + PSF-шрифт | готово |
 | PCI/PCIe enumeration (MCFG) | готово |
-| xHCI USB | обнаружение работает, init отключён |
+| xHCI USB (драйвер + USB-клавиатура) | готово |
+| Интерактивный шелл | готово |
+| Управление процессами из шелла (spawn/kill) | готово |
+| initrd — загрузка модулей через GRUB | готово |
+| RAM FS (ramfs) — создание и запись файлов | готово |
+| ACPI shutdown / reboot | готово |
+
+### Команды шелла
+
+| Команда | Описание |
+|---------|----------|
+| `help` | список команд |
+| `clear` / `cls` | очистить экран |
+| `echo <текст>` | вывести текст |
+| `ticks` | показать счётчик таймерных тиков |
+| `ps` | список процессов |
+| `spawn <имя>` | запустить процесс из initrd |
+| `kill <pid>` | завершить процесс |
+| `mem` | статистика памяти |
+| `module` | список загруженных модулей |
+| `ls` | содержимое RAM FS |
+| `cat <файл>` | вывести файл |
+| `write <файл> <данные>` | записать данные в файл |
+| `create <файл>` | создать пустой файл |
+| `reboot` | перезагрузить систему |
+| `shutdown` / `poweroff` | выключить систему (ACPI) |
 
 ### Системные вызовы
 
 | № | Название | Описание |
 |---|----------|----------|
-| 0 | `SYS_READ` | fd, buf, len |
 | 1 | `SYS_WRITE` | fd, buf, len |
-| 2 | `SYS_OPEN` | — |
-| 3 | `SYS_CLOSE` | — |
-| 24 | `SYS_YIELD` | — |
-| 60 | `SYS_EXIT` | code |
+| 24 | `SYS_YIELD` | уступить процессор |
+| 60 | `SYS_EXIT` | завершить процесс |
 
 ---
 
@@ -120,30 +142,35 @@ qemu-system-x86_64 \
 
 ```
 src/
-  boot.s          — старт 32→64 бит, page tables, higher half
-  main.rs         — kernel_main, парсинг Multiboot2/ACPI, scheduler
-  pmm.rs          — физический менеджер памяти
-  vmm.rs          — виртуальный менеджер памяти
-  heap.rs         — bump-allocator
-  idt.rs          — дескрипторная таблица прерываний
-  lapic.rs        — Local APIC
-  ioapic.rs       — IO APIC
-  pic.rs          — отключение PIC 8259
-  hpet.rs         — HPET таймер
-  tss.rs          — TSS + GDT
-  process.rs      — структура процесса и контекста
-  scheduler.rs    — round-robin планировщик
-  syscall.rs      — обработчик системных вызовов
-  syscall_entry.s — вход/выход SYSCALL (MSR)
-  timer.s         — обработчик прерывания таймера, context switch
-  switch.s        — start_first_process_ring3
-  keyboard.rs     — PS/2 клавиатура
-  keyboard.s      — ISR клавиатуры
-  console.rs      — framebuffer-консоль
+  boot.s           — старт 32→64 бит, page tables, higher half
+  boot.rs          — подключение boot.s через global_asm!
+  main.rs          — kernel_main, парсинг Multiboot2/ACPI, scheduler
+  pmm.rs           — физический менеджер памяти
+  vmm.rs           — виртуальный менеджер памяти
+  heap.rs          — bump-allocator
+  idt.rs           — дескрипторная таблица прерываний
+  lapic.rs         — Local APIC
+  ioapic.rs        — IO APIC
+  pic.rs           — отключение PIC 8259
+  hpet.rs          — HPET таймер
+  tss.rs           — TSS + GDT
+  process.rs       — структура процесса и контекста
+  scheduler.rs     — round-robin планировщик
+  timer_switch.rs  — логика переключения контекста
+  syscall.rs       — обработчик системных вызовов
+  syscall_entry.s  — вход/выход SYSCALL (MSR)
+  timer.s          — обработчик прерывания таймера, context switch
+  switch.s         — start_first_process_ring3
+  keyboard.rs      — PS/2 клавиатура
+  keyboard.s       — ISR клавиатуры
+  console.rs       — framebuffer-консоль + line discipline
   font.rs / font.psf — PSF-шрифт
-  pci.rs          — поиск xHCI через MCFG/PCIe
-  xhci.rs         — xHCI USB (WIP)
-boot/grub/grub.cfg — конфиг загрузчика
+  pci.rs           — поиск xHCI через MCFG/PCIe
+  xhci.rs          — xHCI USB-контроллер и HID-клавиатура
+  shell.rs         — интерактивный шелл с командами
+  ramfs.rs         — RAM-файловая система
+boot/grub/grub.cfg — конфиг загрузчика (ядро + initrd)
+initrd.tar         — начальный RAM-диск с пользовательскими модулями
 md/architecture.md — подробная документация архитектуры
 ```
 
