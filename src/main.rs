@@ -3,6 +3,8 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 use crate::console::Console;
 use core::ptr::{addr_of, read_unaligned};
 
@@ -19,6 +21,7 @@ mod pci;
 mod pic;
 mod pmm;
 mod process;
+mod ramfs;
 mod scheduler;
 mod shell;
 mod syscall;
@@ -388,9 +391,10 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     kprint!("\n");
 
     // === HEAP ===
-    let heap_start = unsafe { pmm::alloc() }; // identity map — физ. адрес доступен напрямую
-    heap::HEAP.init(heap_start, 4096 * 16);
+    let heap_start = unsafe { pmm::alloc_pages(256) }; // 256 страниц = 1 MB
+    heap::HEAP.init(heap_start, 256 * 4096);
     kprint!("HEAP ok\n");
+    unsafe { ramfs::init(); }
 
     // === VMM ===
     // Identity map из boot.s покрывает всю физическую память — доп. маппинг не нужен

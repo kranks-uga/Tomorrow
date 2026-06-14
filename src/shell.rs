@@ -143,6 +143,10 @@ fn execute() {
         cmd_ls();
     } else if eq(cmd, b"cat") {
         cmd_cat(args);
+    } else if eq(cmd, b"write") {
+        cmd_write(args);
+    } else if eq(cmd, b"create") {
+        cmd_create(args);
     } else {
         console().write_str("unknown command: ");
         write_bytes(cmd);
@@ -165,7 +169,9 @@ fn cmd_help() {
          \x20 shutdown / poweroff      power off via ACPI\n\
          \x20 module         read mod_start and mod_end \n\
          \x20 ls             show files\n\
-         \x20 cat <file>     print file contents\n",
+         \x20 cat <file>     print file contents\n\
+         \x20 write <file>   write to file\n\
+         \x20 create <name file> creates a file\n",
     );
 }
 
@@ -397,37 +403,12 @@ fn cmd_reboot() {
 }
 
 fn cmd_ls() {
-    let base = unsafe { crate::MOD_START };
-    let mut off: u64 = 0;
-
-    loop {
-        // внешний: по файлам
-        let name0 = unsafe { *((base + off) as *const u8) };
-        if name0 == 0 {
-            break; // пустое имя = конец архива
-        }
-
-        // --- печать имени: внутренний цикл ---
-        let mut i: u64 = 0;
-        loop {
-            let c = unsafe { *((base + off + i) as *const u8) };
-            if c == 0 || i >= 100 {
-                // NUL или предел поля name
-                break;
-            }
-            console().write_byte(c);
-            i += 1;
-        }
-
-        // --- размер ---
-        let size = parse_octal(base, off + 124, 12);
+    crate::ramfs::list(|name, size| {
+        write_bytes(name);
         console().write_str(" ");
-        console().write_dec(size);
+        console().write_dec(size as u64);
         console().write_str("\n");
-
-        // --- переход к следующему header ---
-        off += 512 + ((size + 511) & !511);
-    }
+    });
 }
 
 fn cmd_cat(args: &[u8]) {
@@ -435,48 +416,39 @@ fn cmd_cat(args: &[u8]) {
         console().write_str("usage: cat <file>\n");
         return;
     }
-
-    let base = unsafe { crate::MOD_START };
-    let mut off: u64 = 0;
-
-    loop {
-        let name0 = unsafe { *((base + off) as *const u8) };
-        if name0 == 0 {
-            break;
-        }
-
-        // Побайтово сравниваем имя в tar с args.
-        // tar-имя: null-terminated, поле 100 байт.
-        // args: срез без null.
-        // Совпадение: все байты args совпали И следующий байт tar == 0.
-        let mut match_ = true;
-        for (i, &expected) in args.iter().enumerate() {
-            let got = unsafe { *((base + off + i as u64) as *const u8) };
-            if got != expected {
-                match_ = false;
-                break;
-            }
-        }
-        if match_ {
-            let after = unsafe { *((base + off + args.len() as u64) as *const u8) };
-            match_ = after == 0;
-        }
-
-        let size = parse_octal(base, off + 124, 12);
-
-        if match_ {
-            for j in 0..size {
-                let b = unsafe { *((base + off + 512 + j) as *const u8) };
-                console().write_byte(b);
-            }
+    match crate::ramfs::find(args) {
+        Some(data) => {
+            write_bytes(data);
             console().write_str("\n");
-            return;
         }
+        None => console().write_str("file not found\n"),
+    }
+}
 
-        off += 512 + ((size + 511) & !511);
+fn cmd_write(args: &[u8]) {
+    if args.is_empty() {
+        console().write_str("usage: write <file>\n");
+        return;
+    }
+    let (name, data) = split_first_word(args);
+    if crate::ramfs::write(name, data) {
+        console().write_str("written to file\n");
+    } else {
+        console().write_str("file not found\n");
+    }
+}
+
+fn cmd_create(args: &[u8]) {
+    if args.is_empty() {
+        console().write_str("usage: create <name file>\n");
     }
 
-    console().write_str("file not found\n");
+    let (name, _) = split_first_word(args);
+    if crate::ramfs::create(name) {
+        console().write_str("file created\n");
+    } else {
+        console().write_str("file not created\n");
+    }
 }
 
 fn mods() {
@@ -537,7 +509,7 @@ fn write_bytes(s: &[u8]) {
     }
 }
 
-fn parse_octal(base: u64, off: u64, len: u64) -> u64 {
+pub fn parse_octal(base: u64, off: u64, len: u64) -> u64 {
     let mut result: u64 = 0;
     for i in 0..len {
         let c = unsafe { *((base + off + i) as *const u8) };

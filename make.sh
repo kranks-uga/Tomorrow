@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 set -e
 
-cargo +nightly build -Zbuild-std=core,compiler_builtins \
+cargo +nightly build -Zbuild-std=core,compiler_builtins,alloc \
     -Zbuild-std-features=compiler-builtins-mem
 
 mkdir -p iso/boot/grub

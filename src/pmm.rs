@@ -69,6 +69,15 @@ pub unsafe fn alloc() -> u64 {
     panic!("PMM: out of memory");
 }
 
+pub unsafe fn alloc_pages(n: usize) -> u64 {
+    let first = alloc();
+    for i in 1..n {
+        let next = alloc();
+        assert!(next == first + i as u64 * 4096, "PMM: alloc_pages non-contiguous");
+    }
+    first
+}
+
 pub unsafe fn free(addr: u64) {
     let addr = addr & !0xFFF;
 
