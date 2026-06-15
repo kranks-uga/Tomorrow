@@ -40,9 +40,8 @@ pub fn init() {
         let size = parse_octal(base, off + 124, 12);
         let data_ptr = unsafe { (base + off + 512) as *const u8 };
         file.data = Vec::with_capacity(size as usize);
-        file.data.extend_from_slice(unsafe {
-            core::slice::from_raw_parts(data_ptr, size as usize)
-        });
+        file.data
+            .extend_from_slice(unsafe { core::slice::from_raw_parts(data_ptr, size as usize) });
 
         unsafe {
             FILES.push(file);
@@ -111,4 +110,17 @@ pub fn create(name: &[u8]) -> bool {
         FILES.push(file);
     };
     return true;
+}
+
+pub fn dealeate(name: &[u8]) -> bool {
+    unsafe {
+        for i in 0..FILES.len() {
+            let len = FILES[i].name.iter().position(|&b| b == 0).unwrap_or(100);
+            if &FILES[i].name[..len] == name {
+                FILES.remove(i);
+                return true;
+            }
+        }
+    }
+    return false;
 }

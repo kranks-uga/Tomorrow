@@ -147,6 +147,8 @@ fn execute() {
         cmd_write(args);
     } else if eq(cmd, b"create") {
         cmd_create(args);
+    } else if eq(cmd, b"rm") {
+        cmd_rm(args);
     } else {
         console().write_str("unknown command: ");
         write_bytes(cmd);
@@ -171,7 +173,8 @@ fn cmd_help() {
          \x20 ls             show files\n\
          \x20 cat <file>     print file contents\n\
          \x20 write <file>   write to file\n\
-         \x20 create <name file> creates a file\n",
+         \x20 create <name file> creates a file\n\
+         \x20 rm <name file>    delete file\n",
     );
 }
 
@@ -451,6 +454,19 @@ fn cmd_create(args: &[u8]) {
     }
 }
 
+fn cmd_rm(args: &[u8]) {
+    if args.is_empty() {
+        console().write_str("usage: rm <name file>\n");
+    }
+
+    let (name, _) = split_first_word(args);
+    if crate::ramfs::dealeate(name) {
+        console().write_str("file deleted\n");
+    } else {
+        console().write_str("the file was not deleted\n");
+    }
+}
+
 fn mods() {
     console().write_str("mod_start=");
     unsafe {
@@ -467,7 +483,7 @@ fn mods() {
 /// Короткая задержка ввода-вывода: запись в неиспользуемый порт 0x80.
 #[inline]
 unsafe fn io_delay() {
-    for _ in 0..1000 {
+    for _ in 0..2000 {
         core::arch::asm!("out 0x80, al", in("al") 0u8, options(nostack, nomem));
     }
 }
