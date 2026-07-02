@@ -79,6 +79,7 @@ static mut HID_TR_PCS: u32 = 1;
 static mut HID_BUF: u64 = 0;
 static mut HID_EP_ADDR: u8 = 0;
 static mut HID_READY: bool = false;
+static mut HID_PREV: [u8; 6] = [0; 6];
 
 // ====================== Event Ring ======================
 
@@ -490,8 +491,8 @@ unsafe fn configure_hid_endpoint(
     *ep_ctx.add(0) = xhci_interval << 16; // Interval [23:16]
     *ep_ctx.add(1) = ((max_packet as u32) << 16) | (7 << 3) | (3 << 1); // Type=Interrupt IN
     *(ep_ctx.add(2) as *mut u64) = tr_ring | 1; // TR Dequeue | DCS
-    // Average TRB Length (word4 [15:0]): часть xHCI без него отдаёт Parameter
-    // Error на Configure Endpoint. Для interrupt EP кладём размер пакета.
+                                                // Average TRB Length (word4 [15:0]): часть xHCI без него отдаёт Parameter
+                                                // Error на Configure Endpoint. Для interrupt EP кладём размер пакета.
     *ep_ctx.add(4) = max_packet as u32;
 
     // Configure Endpoint command
@@ -567,24 +568,31 @@ pub unsafe fn poll_hid() {
         // [0] Modifier, [1] Reserved, [2..7] Keycodes
         let modifier = *(HID_BUF as *const u8);
         let shift = modifier & 0x22 != 0; // Left/Right Shift
+        let mut cur = [0u8; 6];
 
-        for i in 2..8usize {
-            let keycode = *((HID_BUF + i as u64) as *const u8);
+        for i in 0..6 {
+            cur[i] = *((HID_BUF + 2 + i as u64) as *const u8);
+        }
+
+        for &keycode in cur.iter() {
             if keycode == 0 {
                 continue;
             }
+            if HID_PREV.contains(&keycode) {
+                continue;
+            } // зажата с прошлого раза — не новое нажатие
             if let Some(ch) = hid_keycode_to_char(keycode, shift) {
-                // Ввод идёт в шелл — он копит строку и сам эхо-печатает символ.
                 crate::shell::on_char(ch);
             }
         }
+
+        HID_PREV = cur;
     }
 
     // Перезапускаем transfer один раз после дренажа: дальше контроллер сам
     // будет постить события по interval, а мы — добавлять следующий TRB.
     if got_transfer {
-        let ep_idx =
-            ((HID_EP_ADDR & 0xF) * 2 + if HID_EP_ADDR & 0x80 != 0 { 1 } else { 0 }) as u64;
+        let ep_idx = ((HID_EP_ADDR & 0xF) * 2 + if HID_EP_ADDR & 0x80 != 0 { 1 } else { 0 }) as u64;
         queue_hid_transfer(ep_idx);
     }
 }
@@ -825,7 +833,13 @@ unsafe fn enumerate_device(
     if iface_class == 3 {
         kprint!("xhci: HID device found\n");
 
-        let code = set_configuration(dev.slot_id, dev.tr_ring, &mut dev.tr_enq, &mut dev.tr_pcs, cfg);
+        let code = set_configuration(
+            dev.slot_id,
+            dev.tr_ring,
+            &mut dev.tr_enq,
+            &mut dev.tr_pcs,
+            cfg,
+        );
         if code != 1 && code != 13 {
             kprint!("xhci: set_config failed code=");
             write_hex!(code as u64);
@@ -897,19 +911,39 @@ unsafe fn configure_hub_slot(slot_id: u32, nbr_ports: u32, ttt: u32) -> bool {
 unsafe fn hub_set_port_feature(dev: &mut Dev, feature: u16, port: u32) {
     // bmRequestType=0x23, bRequest=SET_FEATURE(3), wValue=feature, wIndex=port
     let setup = ((port as u64) << 32) | ((feature as u64) << 16) | (0x03 << 8) | 0x23;
-    ctrl_out_nodata(dev.slot_id, dev.tr_ring, &mut dev.tr_enq, &mut dev.tr_pcs, setup);
+    ctrl_out_nodata(
+        dev.slot_id,
+        dev.tr_ring,
+        &mut dev.tr_enq,
+        &mut dev.tr_pcs,
+        setup,
+    );
 }
 
 unsafe fn hub_clear_port_feature(dev: &mut Dev, feature: u16, port: u32) {
     // bmRequestType=0x23, bRequest=CLEAR_FEATURE(1)
     let setup = ((port as u64) << 32) | ((feature as u64) << 16) | (0x01 << 8) | 0x23;
-    ctrl_out_nodata(dev.slot_id, dev.tr_ring, &mut dev.tr_enq, &mut dev.tr_pcs, setup);
+    ctrl_out_nodata(
+        dev.slot_id,
+        dev.tr_ring,
+        &mut dev.tr_enq,
+        &mut dev.tr_pcs,
+        setup,
+    );
 }
 
 unsafe fn hub_get_port_status(dev: &mut Dev, buf: u64, port: u32) -> u32 {
     // bmRequestType=0xA3, bRequest=GET_STATUS(0), wLength=4 → wPortStatus|wPortChange
     let setup = (4u64 << 48) | ((port as u64) << 32) | 0xA3;
-    let code = ctrl_in(dev.slot_id, dev.tr_ring, &mut dev.tr_enq, &mut dev.tr_pcs, setup, buf, 4);
+    let code = ctrl_in(
+        dev.slot_id,
+        dev.tr_ring,
+        &mut dev.tr_enq,
+        &mut dev.tr_pcs,
+        setup,
+        buf,
+        4,
+    );
     if code != 1 && code != 13 {
         return 0;
     }
@@ -940,7 +974,13 @@ unsafe fn enumerate_hub(
     kprint!("\n");
 
     // Хаб надо сконфигурировать, иначе он не подаст питание на порты.
-    let code = set_configuration(dev.slot_id, dev.tr_ring, &mut dev.tr_enq, &mut dev.tr_pcs, cfg);
+    let code = set_configuration(
+        dev.slot_id,
+        dev.tr_ring,
+        &mut dev.tr_enq,
+        &mut dev.tr_pcs,
+        cfg,
+    );
     // [DIAG] B — set_configuration вернулся
     kprint!("xhci: hubdiag B code=");
     write_hex!(code as u64);
@@ -1053,7 +1093,14 @@ unsafe fn enumerate_hub(
             (parent_tt_hub_slot, parent_tt_port)
         };
 
-        if enumerate_device(child_route, root_port, child_speed, c_tt_slot, c_tt_port, depth + 1) {
+        if enumerate_device(
+            child_route,
+            root_port,
+            child_speed,
+            c_tt_slot,
+            c_tt_port,
+            depth + 1,
+        ) {
             return true;
         }
     }
@@ -1082,8 +1129,7 @@ pub unsafe fn init(bar0: u64) {
     // итог = (Hi << 5) | Lo. Раньше Hi/Lo были перепутаны → неверное число
     // буферов: либо лишние аллокации (исчерпание PMM), либо нехватка →
     // контроллер DMA-ит в невалидный scratchpad → порча памяти.
-    let max_scratch =
-        ((((hcs_params2 >> 21) & 0x1F) << 5) | ((hcs_params2 >> 27) & 0x1F)) as u64;
+    let max_scratch = ((((hcs_params2 >> 21) & 0x1F) << 5) | ((hcs_params2 >> 27) & 0x1F)) as u64;
 
     let op_base = bar0 + cap_length;
     let rt_base = bar0 + r32(bar0 + 0x18) as u64;

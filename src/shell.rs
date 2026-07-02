@@ -145,7 +145,7 @@ fn execute() {
         cmd_cat(args);
     } else if eq(cmd, b"write") {
         cmd_write(args);
-    } else if eq(cmd, b"create") {
+    } else if eq(cmd, b"touch") {
         cmd_create(args);
     } else if eq(cmd, b"rm") {
         cmd_rm(args);
@@ -173,7 +173,7 @@ fn cmd_help() {
          \x20 ls             show files\n\
          \x20 cat <file>     print file contents\n\
          \x20 write <file>   write to file\n\
-         \x20 create <name file> creates a file\n\
+         \x20 touch <name file> creates a file\n\
          \x20 rm <name file>    delete file\n",
     );
 }
