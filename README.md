@@ -171,8 +171,22 @@ src/
   ramfs.rs         — RAM-файловая система
 boot/grub/grub.cfg — конфиг загрузчика (ядро + initrd)
 initrd.tar         — начальный RAM-диск с пользовательскими модулями
-md/architecture.md — подробная документация архитектуры
+md/               — подробная документация подсистем (см. раздел «Документация»)
 ```
+
+---
+
+## Документация
+
+Подробные разборы подсистем лежат в каталоге [`md/`](md/):
+
+| Документ | О чём |
+|----------|-------|
+| [`architecture.md`](md/architecture.md) | ядро целиком: загрузка, PMM/VMM/heap, IDT, APIC-таймер, TSS/GDT, процессы, планировщик, syscall |
+| [`xhci.md`](md/xhci.md) | USB-стек: xHCI-контроллер, перечисление устройств, хабы/TT, HID-клавиатура |
+| [`ramfs.md`](md/ramfs.md) | файловая система: initrd (tar) → heap, writable ramfs, команды `ls/cat/write/touch/rm` |
+| [`console.md`](md/console.md) | вывод на экран: framebuffer, рендер PSF2-шрифта, API `Console` |
+| [`shell.md`](md/shell.md) | ввод и шелл: клавиатура (PS/2 + USB), `on_char`, line discipline, диспетч команд |
 
 ---
 
