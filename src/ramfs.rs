@@ -1,16 +1,18 @@
 use crate::shell::parse_octal;
 use alloc::vec::Vec;
+use spin::Mutex;
 
 pub struct File {
     pub name: [u8; 100],
     pub data: Vec<u8>,
 }
 
-static mut FILES: Vec<File> = Vec::new();
+static FILES: Mutex<Vec<File>> = Mutex::new(Vec::new());
 
 pub fn init() {
     let base = unsafe { crate::MOD_START };
     let mut off: u64 = 0;
+    let mut files = FILES.lock();
 
     loop {
         // внешний: по файлам
@@ -43,9 +45,7 @@ pub fn init() {
         file.data
             .extend_from_slice(unsafe { core::slice::from_raw_parts(data_ptr, size as usize) });
 
-        unsafe {
-            FILES.push(file);
-        }
+        files.push(file);
 
         // --- переход к следующему header ---
         off += 512 + ((size + 511) & !511);
@@ -54,72 +54,65 @@ pub fn init() {
 
 /// Перебрать файлы (для ls)
 pub fn list(mut cb: impl FnMut(&[u8], usize)) {
-    unsafe {
-        for f in FILES.iter() {
-            let len = f.name.iter().position(|&b| b == 0).unwrap_or(100);
-            cb(&f.name[..len], f.data.len());
-        }
+    let files = FILES.lock();
+    for f in files.iter() {
+        let len = f.name.iter().position(|&b| b == 0).unwrap_or(100);
+        cb(&f.name[..len], f.data.len());
     }
 }
 
 /// Найти файл по имени (для cat):
-pub fn find(name: &[u8]) -> Option<&'static [u8]> {
-    unsafe {
-        for f in FILES.iter() {
-            let len = f.name.iter().position(|&b| b == 0).unwrap_or(100);
-            if &f.name[..len] == name {
-                return Some(&f.data);
-            }
+pub fn with_file<R>(name: &[u8], cb: impl FnOnce(&[u8]) -> R) -> Option<R> {
+    let files = FILES.lock();
+    for f in files.iter() {
+        let len = f.name.iter().position(|&b| b == 0).unwrap_or(100);
+        if &f.name[..len] == name {
+            return Some(cb(&f.data)); // работаем с данными ВНУТРИ лока
         }
     }
     None
 }
 
 pub fn write(name: &[u8], data: &[u8]) -> bool {
-    unsafe {
-        for i in 0..FILES.len() {
-            let file = &mut FILES[i];
-            let len = file.name.iter().position(|&b| b == 0).unwrap_or(100);
-            if &file.name[..len] == name {
-                file.data.clear();
-                file.data.extend_from_slice(data);
+    let mut files = FILES.lock();
+    for i in 0..files.len() {
+        let file = &mut files[i];
+        let len = file.name.iter().position(|&b| b == 0).unwrap_or(100);
+        if &file.name[..len] == name {
+            file.data.clear();
+            file.data.extend_from_slice(data);
 
-                return true;
-            }
+            return true;
         }
-        return false;
-    };
+    }
+    return false;
 }
 
 pub fn create(name: &[u8]) -> bool {
-    unsafe {
-        for i in 0..FILES.len() {
-            let len = FILES[i].name.iter().position(|&b| b == 0).unwrap_or(100);
-            if &FILES[i].name[..len] == name {
-                return false;
-            }
+    let mut files = FILES.lock();
+    for i in 0..files.len() {
+        let len = files[i].name.iter().position(|&b| b == 0).unwrap_or(100);
+        if &files[i].name[..len] == name {
+            return false;
         }
-    };
+    }
     let mut file: File = File {
         name: [0u8; 100],
         data: Vec::new(),
     };
     let copy_len = name.len().min(99);
     file.name[..copy_len].copy_from_slice(&name[..copy_len]);
-    unsafe {
-        FILES.push(file);
-    };
+    files.push(file);
     return true;
 }
 
-pub fn dealeate(name: &[u8]) -> bool {
-    unsafe {
-        for i in 0..FILES.len() {
-            let len = FILES[i].name.iter().position(|&b| b == 0).unwrap_or(100);
-            if &FILES[i].name[..len] == name {
-                FILES.remove(i);
-                return true;
-            }
+pub fn delete(name: &[u8]) -> bool {
+    let mut files = FILES.lock();
+    for i in 0..files.len() {
+        let len = files[i].name.iter().position(|&b| b == 0).unwrap_or(100);
+        if &files[i].name[..len] == name {
+            files.remove(i);
+            return true;
         }
     }
     return false;

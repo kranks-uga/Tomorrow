@@ -172,7 +172,7 @@ fn cmd_help() {
          \x20 module         read mod_start and mod_end \n\
          \x20 ls             show files\n\
          \x20 cat <file>     print file contents\n\
-         \x20 write <file>   write to file\n\
+         \x20 write <file> <text> write to file\n\
          \x20 touch <name file> creates a file\n\
          \x20 rm <name file>    delete file\n",
     );
@@ -419,18 +419,20 @@ fn cmd_cat(args: &[u8]) {
         console().write_str("usage: cat <file>\n");
         return;
     }
-    match crate::ramfs::find(args) {
-        Some(data) => {
-            write_bytes(data);
-            console().write_str("\n");
-        }
-        None => console().write_str("file not found\n"),
+
+    let found = crate::ramfs::with_file(args, |data| {
+        write_bytes(data);
+        console().write_str("\n");
+    });
+
+    if found.is_none() {
+        console().write_str("file not found\n");
     }
 }
 
 fn cmd_write(args: &[u8]) {
     if args.is_empty() {
-        console().write_str("usage: write <file>\n");
+        console().write_str("usage: write <file> <text>\n");
         return;
     }
     let (name, data) = split_first_word(args);
@@ -443,7 +445,8 @@ fn cmd_write(args: &[u8]) {
 
 fn cmd_create(args: &[u8]) {
     if args.is_empty() {
-        console().write_str("usage: create <name file>\n");
+        console().write_str("usage: touch <name file>\n");
+        return;
     }
 
     let (name, _) = split_first_word(args);
@@ -457,10 +460,11 @@ fn cmd_create(args: &[u8]) {
 fn cmd_rm(args: &[u8]) {
     if args.is_empty() {
         console().write_str("usage: rm <name file>\n");
+        return;
     }
 
     let (name, _) = split_first_word(args);
-    if crate::ramfs::dealeate(name) {
+    if crate::ramfs::delete(name) {
         console().write_str("file deleted\n");
     } else {
         console().write_str("the file was not deleted\n");

@@ -6,6 +6,7 @@ build = "build.rs"
 
 [dependencies]
 pc-keyboard = { version = "0.7", default-features = false }
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
 
 [profile.dev]
 panic = "abort"
