@@ -75,26 +75,20 @@ pub fn with_file<R>(name: &[u8], cb: impl FnOnce(&[u8]) -> R) -> Option<R> {
 
 pub fn write(name: &[u8], data: &[u8]) -> bool {
     let mut files = FILES.lock();
-    for i in 0..files.len() {
-        let file = &mut files[i];
-        let len = file.name.iter().position(|&b| b == 0).unwrap_or(100);
-        if &file.name[..len] == name {
-            file.data.clear();
-            file.data.extend_from_slice(data);
-
-            return true;
+    match search_name(&files, name) {
+        Some(i) => {
+            files[i].data.clear();
+            files[i].data.extend_from_slice(data);
+            true
         }
+        None => false,
     }
-    return false;
 }
 
 pub fn create(name: &[u8]) -> bool {
     let mut files = FILES.lock();
-    for i in 0..files.len() {
-        let len = files[i].name.iter().position(|&b| b == 0).unwrap_or(100);
-        if &files[i].name[..len] == name {
-            return false;
-        }
+    if search_name(&files, name).is_some() {
+        return false;
     }
     let mut file: File = File {
         name: [0u8; 100],
@@ -108,12 +102,21 @@ pub fn create(name: &[u8]) -> bool {
 
 pub fn delete(name: &[u8]) -> bool {
     let mut files = FILES.lock();
+    match search_name(&files, name) {
+        Some(i) => {
+            files.remove(i);
+            true
+        }
+        None => false,
+    }
+}
+
+fn search_name(files: &[File], name: &[u8]) -> Option<usize> {
     for i in 0..files.len() {
         let len = files[i].name.iter().position(|&b| b == 0).unwrap_or(100);
         if &files[i].name[..len] == name {
-            files.remove(i);
-            return true;
+            return Some(i);
         }
     }
-    return false;
+    None
 }
