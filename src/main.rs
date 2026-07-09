@@ -393,6 +393,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     // === HEAP ===
     let heap_start = unsafe { pmm::alloc_pages(256) }; // 256 страниц = 1 MB
     heap::HEAP.init(heap_start, 256 * 4096);
+    heap::self_test();
     kprint!("HEAP ok\n");
     unsafe { ramfs::init(); }
 
