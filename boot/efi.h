@@ -1,36 +1,54 @@
 #ifndef EFI_H
 #define EFI_H
 
+// ============================================================================
+// UEFI Header Definitions
+// Minimal UEFI headers for x86_64 bootloader development
+// ============================================================================
+
+// Standard UEFI calling convention macros
 #define IN
 #define OUT
 #define OPTIONAL
 
-// ==== Базовые типы ====
+// Null pointer definition
+#define NULL ((void *)0)
+
+// ============================================================================
+// Basic Type Definitions
+// ============================================================================
 typedef unsigned char UINT8;
 typedef unsigned short UINT16;
 typedef unsigned int UINT32;
 typedef unsigned long long UINT64;
 typedef long long INT64;
-typedef unsigned long long UINTN;
-typedef UINT16 CHAR16;
-typedef UINT64 EFI_STATUS;
-typedef void *EFI_HANDLE;
+typedef unsigned long long UINTN; // Unsigned integer large enough to hold a pointer
+typedef UINT16 CHAR16;            // 16-bit Unicode character
+typedef UINT64 EFI_STATUS;        // UEFI status code (64-bit)
+typedef void *EFI_HANDLE;         // Opaque handle type
 typedef UINT64 EFI_PHYSICAL_ADDRESS;
 typedef UINT64 EFI_VIRTUAL_ADDRESS;
 
+// Function pointer type for unloading EFI images
 typedef EFI_STATUS(__attribute__((ms_abi)) * EFI_IMAGE_UNLOAD)(EFI_HANDLE ImageHandle);
 
-// ==== Коды ответов ====
-#define EFI_SUCCESS 0
-#define EFI_BUFFER_TOO_SMALL 0x8000000000000005
-#define EFI_NOT_FOUND 0x800000000000000E
+// ============================================================================
+// Status Codes
+// ============================================================================
+#define EFI_SUCCESS 0                           // Operation completed successfully
+#define EFI_BUFFER_TOO_SMALL 0x8000000000000005 // Buffer too small for data
+#define EFI_NOT_FOUND 0x800000000000000E        // Requested data not found
 
-// ==== Константы режимов файлов ====
-#define EFI_FILE_MODE_READ 0x0000000000000001
-#define EFI_FILE_MODE_WRITE 0x0000000000000002
-#define EFI_FILE_MODE_CREATE 0x8000000000000000
+// ============================================================================
+// File Mode Constants
+// ============================================================================
+#define EFI_FILE_MODE_READ 0x0000000000000001   // Read access
+#define EFI_FILE_MODE_WRITE 0x0000000000000002  // Write access
+#define EFI_FILE_MODE_CREATE 0x8000000000000000 // Create file if not exists
 
-// ==== GUID-ы основных протоколов ====
+// ============================================================================
+// GUID Definitions (Globally Unique Identifiers)
+// ============================================================================
 typedef struct
 {
     UINT32 Data1;
@@ -39,6 +57,7 @@ typedef struct
     UINT8 Data4[8];
 } EFI_GUID;
 
+// Protocol GUIDs for UEFI services
 #define EFI_LOADED_IMAGE_PROTOCOL_GUID \
     {0x5B1B31A1, 0x9562, 0x11d2, {0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}}
 
@@ -51,17 +70,23 @@ typedef struct
 #define EFI_FILE_INFO_ID \
     {0x09576E92, 0x6D3F, 0x11D2, {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}}
 
-// ==== Общий заголовок таблиц UEFI ====
+// ============================================================================
+// UEFI Table Header
+// Common header for all UEFI configuration tables
+// ============================================================================
 typedef struct
 {
-    UINT64 Signature;
-    UINT32 Revision;
-    UINT32 HeaderSize;
-    UINT32 CRC32;
-    UINT32 Reserved;
+    UINT64 Signature;  // Table signature
+    UINT32 Revision;   // Table revision
+    UINT32 HeaderSize; // Size of the header
+    UINT32 CRC32;      // CRC32 checksum of the table
+    UINT32 Reserved;   // Reserved field
 } EFI_TABLE_HEADER;
 
-// ==== Протокол вывода текста ====
+// ============================================================================
+// Simple Text Output Protocol
+// Used for console text output
+// ============================================================================
 typedef struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL
 {
     void *Reset;
@@ -76,7 +101,10 @@ typedef struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL
         struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This);
 } EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
 
-// ==== Пути устройств ====
+// ============================================================================
+// Device Path Protocol
+// Represents a device path in UEFI
+// ============================================================================
 typedef struct
 {
     UINT8 Type;
@@ -84,7 +112,10 @@ typedef struct
     UINT16 Length;
 } EFI_DEVICE_PATH_PROTOCOL;
 
-// ==== Типы памяти ====
+// ============================================================================
+// Memory Types
+// Defines different types of memory regions
+// ============================================================================
 typedef enum
 {
     EfiReservedMemoryType,
@@ -104,6 +135,9 @@ typedef enum
     EfiMaxMemoryType
 } EFI_MEMORY_TYPE;
 
+// ============================================================================
+// Memory Allocation Types
+// ============================================================================
 typedef enum
 {
     AllocateAnyPages,
@@ -112,6 +146,10 @@ typedef enum
     MaxAllocateType
 } EFI_ALLOCATE_TYPE;
 
+// ============================================================================
+// Memory Descriptor
+// Describes a memory region
+// ============================================================================
 typedef struct
 {
     UINT32 Type;
@@ -121,7 +159,10 @@ typedef struct
     UINT64 Attribute;
 } EFI_MEMORY_DESCRIPTOR;
 
-// ==== Протокол работы с графикой (GOP) ====
+// ============================================================================
+// Graphics Output Protocol (GOP)
+// Used for graphics output in UEFI
+// ============================================================================
 typedef enum
 {
     PixelRedGreenBlueReserved8BitPerColor,
@@ -155,8 +196,8 @@ typedef struct
     UINT32 Mode;
     EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *Info;
     UINTN SizeOfInfo;
-    EFI_PHYSICAL_ADDRESS FrameBufferBase; // <- Физический адрес видеопамяти
-    UINTN FrameBufferSize;                // <- Размер кадрового буфера в байтах
+    EFI_PHYSICAL_ADDRESS FrameBufferBase; // Physical address of video memory
+    UINTN FrameBufferSize;                // Size of frame buffer in bytes
 } EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE;
 
 typedef struct EFI_GRAPHICS_OUTPUT_PROTOCOL
@@ -169,7 +210,10 @@ typedef struct EFI_GRAPHICS_OUTPUT_PROTOCOL
     EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE *Mode;
 } EFI_GRAPHICS_OUTPUT_PROTOCOL;
 
-// ==== Протокол работы с файлами (Файловая система) ====
+// ============================================================================
+// File Protocol
+// Used for file operations
+// ============================================================================
 typedef struct _EFI_FILE_PROTOCOL EFI_FILE_PROTOCOL;
 
 typedef struct _EFI_FILE_PROTOCOL
@@ -200,18 +244,24 @@ typedef struct _EFI_FILE_PROTOCOL
     void *Flush;
 } EFI_FILE_PROTOCOL;
 
+// ============================================================================
+// File Information Structure
+// ============================================================================
 typedef struct
 {
     UINT64 Size;
-    UINT64 FileSize; // <- Размер файла на диске
+    UINT64 FileSize; // Size of file on disk
     UINT64 PhysicalSize;
-    void *CreateTime; // Упрощено
+    void *CreateTime; // Simplified
     void *LastAccessTime;
     void *ModificationTime;
     UINT64 Attribute;
-    CHAR16 FileName[1]; // Динамическое имя файла в UTF-16
+    CHAR16 FileName[1]; // Dynamic filename in UTF-16
 } EFI_FILE_INFO;
 
+// ============================================================================
+// Simple File System Protocol
+// ============================================================================
 typedef struct EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
 {
     UINT64 Revision;
@@ -220,20 +270,20 @@ typedef struct EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
         EFI_FILE_PROTOCOL **Root);
 } EFI_SIMPLE_FILE_SYSTEM_PROTOCOL;
 
-// ==== Протокол загруженного образа ====
+// ============================================================================
+// Loaded Image Protocol
+// Information about a loaded EFI image
+// ============================================================================
 typedef struct
 {
     UINT32 Revision;
     EFI_HANDLE ParentHandle;
     struct EFI_SYSTEM_TABLE *SystemTable;
-
     EFI_HANDLE DeviceHandle;
     EFI_DEVICE_PATH_PROTOCOL *FilePath;
     void *Reserved;
-
     UINT32 LoadOptionsSize;
     void *LoadOptions;
-
     void *ImageBase;
     UINT64 ImageSize;
     EFI_MEMORY_TYPE ImageCodeType;
@@ -241,16 +291,19 @@ typedef struct
     EFI_IMAGE_UNLOAD Unload;
 } EFI_LOADED_IMAGE_PROTOCOL;
 
-// ==== Boot Services (Все функции на своих местах согласно спецификации) ====
+// ============================================================================
+// Boot Services
+// UEFI boot services table - available until ExitBootServices()
+// ============================================================================
 typedef struct EFI_BOOT_SERVICES
 {
     EFI_TABLE_HEADER Hdr;
 
-    // Сервисы управления задачами (TPL)
+    // Task Priority Level (TPL) services
     void *RaiseTPL;
     void *RestoreTPL;
 
-    // Сервисы управления памятью
+    // Memory management services
     EFI_STATUS(__attribute__((ms_abi)) * AllocatePages)(
         EFI_ALLOCATE_TYPE Type,
         EFI_MEMORY_TYPE MemoryType,
@@ -272,7 +325,7 @@ typedef struct EFI_BOOT_SERVICES
     EFI_STATUS(__attribute__((ms_abi)) * FreePool)(
         void *Buffer);
 
-    // Сервисы событий и таймеров
+    // Event and timer services
     void *CreateEvent;
     void *SetTimer;
     void *WaitForEvent;
@@ -280,7 +333,7 @@ typedef struct EFI_BOOT_SERVICES
     void *CloseEvent;
     void *CheckEvent;
 
-    // Сервисы поддержки протоколов
+    // Protocol handler services
     void *InstallProtocolInterface;
     void *ReinstallProtocolInterface;
     void *UninstallProtocolInterface;
@@ -291,12 +344,12 @@ typedef struct EFI_BOOT_SERVICES
     void *Reserved;
     void *RegisterProtocolNotify;
 
-    // Сервисы поиска хэндлов
+    // Handle location services
     void *LocateHandle;
     void *LocateDevicePath;
     void *InstallConfigurationTable;
 
-    // Сервисы загрузки образов
+    // Image services
     void *ImageLoad;
     void *ImageStart;
     void *Exit;
@@ -305,21 +358,21 @@ typedef struct EFI_BOOT_SERVICES
         EFI_HANDLE ImageHandle,
         UINTN MapKey);
 
-    // Другие сервисы
+    // Miscellaneous services
     void *GetNextMonotonicCount;
     void *Stall;
     void *SetWatchdogTimer;
 
-    // Драйверные сервисы
+    // Driver services
     void *ConnectController;
     void *DisconnectController;
 
-    // Сервисы открытия/закрытия протоколов напрямую
+    // Protocol open/close services
     void *OpenProtocol;
     void *CloseProtocol;
     void *OpenProtocolInformation;
 
-    // Библиотечные сервисы
+    // Library services
     void *ProtocolsPerHandle;
     void *LocateHandleBuffer;
     EFI_STATUS(__attribute__((ms_abi)) * LocateProtocol)(
@@ -328,14 +381,20 @@ typedef struct EFI_BOOT_SERVICES
         void **Interface);
 } EFI_BOOT_SERVICES;
 
-// ==== Таблица конфигурации (для поиска ACPI) ====
+// ============================================================================
+// Configuration Table Entry
+// Used to locate ACPI tables and other system tables
+// ============================================================================
 typedef struct
 {
     EFI_GUID VendorGuid;
     void *VendorTable;
 } EFI_CONFIGURATION_TABLE;
 
-// ==== Главная системная таблица ====
+// ============================================================================
+// System Table
+// Main UEFI system table - entry point to all UEFI services
+// ============================================================================
 typedef struct EFI_SYSTEM_TABLE
 {
     EFI_TABLE_HEADER Hdr;
@@ -348,10 +407,28 @@ typedef struct EFI_SYSTEM_TABLE
     EFI_HANDLE StandardErrorHandle;
     void *StdErr;
     void *RuntimeServices;
-    EFI_HANDLE ConsoleErrorHandle;
     EFI_BOOT_SERVICES *BootServices;
     UINTN NumberOfTableEntries;
-    EFI_CONFIGURATION_TABLE *ConfigurationTable; // <- Позволит найти указатель на ACPI RSDP
+    EFI_CONFIGURATION_TABLE *ConfigurationTable;
 } EFI_SYSTEM_TABLE;
 
-#endif
+// ============================================================================
+// Error Assertion Macro
+// Halts execution if status is not EFI_SUCCESS
+// ============================================================================
+static inline void ASSERT_EFI(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *ConOut,
+    EFI_STATUS Status,
+    const CHAR16 *ErrorMessage)
+{
+    if (Status != EFI_SUCCESS)
+    {
+        ConOut->OutputString(ConOut, (CHAR16 *)ErrorMessage);
+        while (1)
+        {
+            __asm__("hlt"); // Halt CPU on fatal error
+        }
+    }
+}
+
+#endif // EFI_H
