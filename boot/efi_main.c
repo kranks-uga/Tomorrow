@@ -124,6 +124,15 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_T
     SystemTable->ConOut->OutputString(SystemTable->ConOut, L"[+] SUCCESS: Kernel loaded and ready!\r\n");
     SystemTable->ConOut->OutputString(SystemTable->ConOut, L"[!] Halting...\r\n");
 
+    // Превращаем адрес kernel_buffer в указатель на функцию
+    typedef void (*kernel_entry_t)();
+    kernel_entry_t kernel_entry = (kernel_entry_t)kernel_buffer;
+
+    SystemTable->ConOut->OutputString(SystemTable->ConOut, L"[!] Jumping to kernel...\r\n");
+
+    // Прыгаем в ядро!
+    kernel_entry();
+
     // Halt CPU - in production, this would jump to kernel entry point
     while (1)
     {
