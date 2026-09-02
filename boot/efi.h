@@ -202,7 +202,11 @@ typedef struct
 
 typedef struct EFI_GRAPHICS_OUTPUT_PROTOCOL
 {
-    void *QueryMode;
+    EFI_STATUS(__attribute__((ms_abi)) * QueryMode)(
+        struct EFI_GRAPHICS_OUTPUT_PROTOCOL *This,
+        UINT32 ModeNumber,
+        UINTN *SizeOfInfo,
+        EFI_GRAPHICS_OUTPUT_MODE_INFORMATION **Info);
     EFI_STATUS(__attribute__((ms_abi)) * SetMode)(
         struct EFI_GRAPHICS_OUTPUT_PROTOCOL *This,
         UINT32 ModeNumber);
