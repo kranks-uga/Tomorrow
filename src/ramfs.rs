@@ -40,7 +40,7 @@ pub fn init() {
 
         // --- размер ---
         let size = parse_octal(base, off + 124, 12);
-        let data_ptr = unsafe { (base + off + 512) as *const u8 };
+        let data_ptr = (base + off + 512) as *const u8;
         file.data = Vec::with_capacity(size as usize);
         file.data
             .extend_from_slice(unsafe { core::slice::from_raw_parts(data_ptr, size as usize) });

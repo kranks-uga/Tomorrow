@@ -1,6 +1,5 @@
 use crate::pmm;
-use crate::process::{self, Process, ProcessState};
-use crate::CONSOLE;
+use crate::process::{Process, ProcessState};
 
 #[repr(C)]
 pub struct Context {
@@ -54,14 +53,6 @@ pub unsafe fn next_pid() -> u64 {
 }
 
 impl Scheduler {
-    pub fn new() -> Self {
-        Scheduler {
-            processes: [const { None }; 64],
-            current: 0,
-            count: 0,
-        }
-    }
-
     pub fn add_process(&mut self, process: Process) {
         for i in 0..64 {
             if self.processes[i].is_none() {
@@ -73,24 +64,19 @@ impl Scheduler {
         panic!("scheduler: too many processes");
     }
 
-    pub fn schedule(&mut self) -> Option<&mut Process> {
-        let mut found_idx = None;
-
-        for i in 0..64 {
-            let idx = (self.current + 1 + i) % 64;
+    /// Индекс следующего `Running`-процесса после текущего (round-robin).
+    /// Общая логика для `yield_now` и `timer_do_switch` — раньше каждый
+    /// переключатель реализовывал этот же обход отдельно, и один из них
+    /// (`yield_now`) забывал обновить `TSS.rsp0` после переключения.
+    pub(crate) fn next_running(&self) -> Option<usize> {
+        for i in 1..64 {
+            let idx = (self.current + i) % 64;
             if let Some(proc) = &self.processes[idx] {
                 if proc.state == ProcessState::Running {
-                    found_idx = Some(idx);
-                    break;
+                    return Some(idx);
                 }
             }
         }
-
-        if let Some(idx) = found_idx {
-            self.current = idx;
-            return self.processes[idx].as_mut();
-        }
-
         None
     }
 
@@ -120,29 +106,14 @@ impl Scheduler {
 pub unsafe fn yield_now() {
     let current = SCHEDULER.current;
 
-    for i in 1..64 {
-        let idx = (current + i) % 64;
-        if let Some(p) = &SCHEDULER.processes[idx] {
-            if p.state == ProcessState::Running {
-                let old =
-                    &mut SCHEDULER.processes[current].as_mut().unwrap().context as *mut Context;
-                let new = &SCHEDULER.processes[idx].as_ref().unwrap().context as *const Context;
-                SCHEDULER.current = idx;
-                context_switch(old, new);
-                return;
-            }
-        }
+    if let Some(idx) = (*(&raw const SCHEDULER)).next_running() {
+        let old = &mut SCHEDULER.processes[current].as_mut().unwrap().context as *mut Context;
+        let new = &SCHEDULER.processes[idx].as_ref().unwrap().context as *const Context;
+        SCHEDULER.current = idx;
+        (&raw mut crate::tss::TSS).as_mut().unwrap().rsp0 =
+            SCHEDULER.processes[idx].as_ref().unwrap().kernel_stack;
+        context_switch(old, new);
     }
-}
-
-pub unsafe fn start_first_process() -> ! {
-    let ctx = &SCHEDULER.processes[0].as_ref().unwrap().context as *const Context;
-    core::arch::asm!(
-        "mov rsp, [{0} + 0x38]",
-        "jmp [{0} + 0x80]",
-        in(reg) ctx,
-        options(noreturn)
-    );
 }
 
 pub unsafe fn start_first_process_ring3() -> ! {

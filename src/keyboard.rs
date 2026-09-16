@@ -48,7 +48,7 @@ pub unsafe extern "C" fn keyboard_irq_handler() {
         }
         let scancode = inb(0x60);
 
-        if let Some(kb) = KEYBOARD.as_mut() {
+        if let Some(kb) = (&raw mut KEYBOARD).as_mut().unwrap().as_mut() {
             if let Ok(Some(key_event)) = kb.add_byte(scancode) {
                 if let Some(key) = kb.process_keyevent(key_event) {
                     match key {

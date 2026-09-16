@@ -243,10 +243,6 @@ pub fn self_test() {
     assert_eq!(p as usize % 4096, 0);
 }
 
-pub fn kmalloc(size: usize) -> *mut u8 {
-    kmalloc_aligned(size, 8)
-}
-
 pub fn kmalloc_aligned(size: usize, align: usize) -> *mut u8 {
     match Layout::from_size_align(size, align) {
         Ok(layout) => unsafe { HEAP.alloc(layout) },

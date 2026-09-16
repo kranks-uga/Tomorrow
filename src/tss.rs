@@ -23,23 +23,6 @@ pub static mut TSS: Tss = Tss {
     iomap_base: 0,
 };
 
-#[repr(C, packed)]
-pub struct GdtEntry {
-    pub limit_low: u16,
-    pub base_low: u16,
-    pub base_mid: u8,
-    pub access: u8,
-    pub flags_limit: u8,
-    pub base_high: u8,
-}
-
-#[repr(C, packed)]
-pub struct TssDescriptor {
-    pub low: GdtEntry,
-    pub base_upper: u32,
-    pub reserved: u32,
-}
-
 // GDT с поддержкой TSS
 // 0x00: null, 0x08: kernel code, 0x10: kernel data,
 // 0x18: user data (DPL=3), 0x20: user code (DPL=3),

@@ -578,7 +578,7 @@ pub unsafe fn poll_hid() {
             if keycode == 0 {
                 continue;
             }
-            if HID_PREV.contains(&keycode) {
+            if (*(&raw const HID_PREV)).contains(&keycode) {
                 continue;
             } // зажата с прошлого раза — не новое нажатие
             if let Some(ch) = hid_keycode_to_char(keycode, shift) {
@@ -586,7 +586,7 @@ pub unsafe fn poll_hid() {
             }
         }
 
-        HID_PREV = cur;
+        *(&raw mut HID_PREV) = cur;
     }
 
     // Перезапускаем transfer один раз после дренажа: дальше контроллер сам

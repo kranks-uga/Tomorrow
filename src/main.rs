@@ -50,8 +50,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-const KERNEL_VIRT: u64 = 0xFFFF800000000000;
-
 #[repr(C)]
 struct Mbtag {
     typ: u32,
@@ -204,7 +202,7 @@ struct SavedRegs {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const scheduler::Context {
+unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const scheduler::Context {
     TICKS += 1;
     lapic::eoi(LAPIC_BASE);
 
@@ -254,15 +252,11 @@ pub unsafe extern "C" fn timer_do_switch(regs: *mut SavedRegs) -> *const schedul
         proc.context.ss = *iretq.add(4);
     }
 
-    for i in 1..64 {
-        let idx = (current + i) % 64;
-        if let Some(p) = &scheduler::SCHEDULER.processes[idx] {
-            if p.state == process::ProcessState::Running {
-                scheduler::SCHEDULER.current = idx;
-                (&raw mut tss::TSS).as_mut().unwrap().rsp0 = p.kernel_stack;
-                return &p.context as *const _;
-            }
-        }
+    if let Some(idx) = (*(&raw const scheduler::SCHEDULER)).next_running() {
+        scheduler::SCHEDULER.current = idx;
+        let p = scheduler::SCHEDULER.processes[idx].as_ref().unwrap();
+        (&raw mut tss::TSS).as_mut().unwrap().rsp0 = p.kernel_stack;
+        return &p.context as *const _;
     }
 
     core::ptr::null()
@@ -275,7 +269,6 @@ extern "C" {
 #[unsafe(naked)]
 pub extern "C" fn process_a() -> ! {
     core::arch::naked_asm!(
-        ".intel_syntax noprefix",
         "lea rsi, [rip + 1f]",
         "mov rax, 1",
         "mov rdi, 1",
@@ -283,14 +276,12 @@ pub extern "C" fn process_a() -> ! {
         "syscall",
         "0: jmp 0b",
         "1: .byte 0x55, 0x33, 0x0A",
-        ".att_syntax prefix",
     )
 }
 
 #[unsafe(naked)]
 pub extern "C" fn process_b() -> ! {
     core::arch::naked_asm!(
-        ".intel_syntax noprefix",
         "lea rsi, [rip + 1f]",
         "mov rax, 1",
         "mov rdi, 1",
@@ -298,7 +289,6 @@ pub extern "C" fn process_b() -> ! {
         "syscall",
         "0: jmp 0b",
         "1: .byte 0x42, 0x0A",
-        ".att_syntax prefix",
     )
 }
 
@@ -387,7 +377,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     kprint!("module: start=");
     write_hex!(mod_start);
     kprint!(" size=");
-    crate::write_hex!((mod_end - mod_start)); // или write_dec, если есть макрос
+    crate::write_hex!(mod_end - mod_start); // или write_dec, если есть макрос
     kprint!("\n");
 
     // === HEAP ===
@@ -395,7 +385,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     heap::HEAP.init(heap_start, 256 * 4096);
     heap::self_test();
     kprint!("HEAP ok\n");
-    unsafe { ramfs::init(); }
+    ramfs::init();
 
     // === VMM ===
     // Identity map из boot.s покрывает всю физическую память — доп. маппинг не нужен
@@ -438,40 +428,41 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             let sig = unsafe { &*(entry_addr as *const [u8; 4]) };
 
             if sig == b"MCFG" {
-                unsafe {
-                    let mcfg_base = core::ptr::read_unaligned((entry_addr + 44) as *const u64);
-                    kprint!("MCFG: ");
-                    write_hex!(mcfg_base);
-                    kprint!("\n");
-                    xhci_bar_phys = pci::find_xhci(mcfg_base);
-                }
+                let mcfg_base = unsafe { core::ptr::read_unaligned((entry_addr + 44) as *const u64) };
+                kprint!("MCFG: ");
+                write_hex!(mcfg_base);
+                kprint!("\n");
+                unsafe { pci::enumerate(mcfg_base) };
+                xhci_bar_phys = unsafe { pci::find_xhci(mcfg_base) };
             }
 
             if sig == b"FACP" {
+                let pm1a_cnt = unsafe { read_unaligned((entry_addr + 64) as *const u32) } as u16;
+                let pm1b_cnt = unsafe { read_unaligned((entry_addr + 68) as *const u32) } as u16;
+                let dsdt = unsafe { read_unaligned((entry_addr + 40) as *const u32) } as u64;
+
+                kprint!("PM1a_CNT: ");
+                write_hex!(pm1a_cnt as u64);
+                kprint!("\n");
+
+                // сохранить в статики для команды shutdown
                 unsafe {
-                    let pm1a_cnt = read_unaligned((entry_addr + 64) as *const u32) as u16;
-                    let pm1b_cnt = read_unaligned((entry_addr + 68) as *const u32) as u16;
-                    let dsdt = read_unaligned((entry_addr + 40) as *const u32) as u64;
-
-                    kprint!("PM1a_CNT: ");
-                    write_hex!(pm1a_cnt as u64);
-                    kprint!("\n");
-
-                    // сохранить в статики для команды shutdown
                     PM1A_CNT = pm1a_cnt;
                     PM1B_CNT = pm1b_cnt;
                     DSDT_ADDR = dsdt;
+                }
 
-                    // SLP_TYPa/b лежат не в FADT, а в \_S5 внутри DSDT (AML).
-                    if let Some((a, b)) = parse_s5(dsdt) {
+                // SLP_TYPa/b лежат не в FADT, а в \_S5 внутри DSDT (AML).
+                if let Some((a, b)) = parse_s5(dsdt) {
+                    unsafe {
                         SLP_TYPA = a;
                         SLP_TYPB = b;
-                        kprint!("SLP_TYPa: ");
-                        write_hex!(a as u64);
-                        kprint!("\n");
-                    } else {
-                        kprint!("_S5 not found\n");
                     }
+                    kprint!("SLP_TYPa: ");
+                    write_hex!(a as u64);
+                    kprint!("\n");
+                } else {
+                    kprint!("_S5 not found\n");
                 }
             }
 
@@ -522,7 +513,9 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             .as_mut()
             .unwrap()
             .add_process(proc_b);
-        kprint!("Scheduler ok\n");
+    }
+    kprint!("Scheduler ok\n");
+    unsafe {
         // CLI до SCHEDULER_READY: если таймер сработает между READY=true и
         // первым iretq, он сохранит ядровый RIP в context.rip proc_a и
         // start_first_process_ring3 прыгнет в ring-3 с ядровым адресом → #PF.
@@ -533,8 +526,6 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
         shell::init();
         scheduler::start_first_process_ring3();
     }
-
-    loop {}
 }
 
 /// Достаёт SLP_TYPa/SLP_TYPb из объекта `\_S5` в DSDT (AML).

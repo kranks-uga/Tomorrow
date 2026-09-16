@@ -71,14 +71,27 @@ pub unsafe extern "C" fn syscall_handler(
     arg1: u64,
     arg2: u64,
     arg3: u64,
-    arg4: u64,
-    arg5: u64,
+    _arg4: u64,
+    _arg5: u64,
 ) -> u64 {
+    if !syscall_allowed(nr) {
+        return u64::MAX;
+    }
     match nr {
         SYS_WRITE => sys_write(arg1, arg2 as *const u8, arg3),
         SYS_EXIT => sys_exit(arg1),
         SYS_YIELD => sys_yield(),
         _ => u64::MAX,
+    }
+}
+
+/// Проверяет `Process::syscall_mask` текущего процесса — бит `nr` должен быть
+/// установлен, иначе syscall запрещён. Маска заполняется при создании
+/// процесса (см. process.rs), но раньше ничем не проверялась.
+unsafe fn syscall_allowed(nr: u64) -> bool {
+    match &scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current] {
+        Some(p) if nr < 64 => (p.syscall_mask >> nr) & 1 != 0,
+        _ => false,
     }
 }
 

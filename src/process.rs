@@ -1,7 +1,8 @@
+use crate::pml4;
+use crate::pmm;
 use crate::scheduler::Context;
 use crate::vmm::PAGE_USER;
 use crate::vmm::PAGE_WRITABLE;
-use crate::{pml4, pmm};
 
 #[derive(PartialEq)]
 pub enum ProcessState {
@@ -64,9 +65,6 @@ impl Process {
         let user_code_virt: u64 = 0x0000_0200_0000_0000 + pid * 0x1000;
 
         unsafe {
-            extern "C" {
-                static pml4: crate::vmm::PageTable;
-            }
             let pml4_ptr = &pml4 as *const _ as *mut crate::vmm::PageTable;
             (*pml4_ptr).map(
                 user_stack_virt,
