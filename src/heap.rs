@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem;
 use core::ptr::null_mut;

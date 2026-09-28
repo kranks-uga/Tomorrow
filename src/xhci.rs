@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use crate::{kprint, pmm, write_hex, CONSOLE};
 
 // Identity map покрывает всю физическую память (boot.s: pdpt0/pdpt1 × 1GB huge pages)

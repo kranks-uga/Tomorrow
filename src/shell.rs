@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use crate::console::Console;
 use crate::process::{Process, ProcessState};
 use crate::{pmm, scheduler, CONSOLE, TICKS};
@@ -420,13 +421,12 @@ fn cmd_cat(args: &[u8]) {
         return;
     }
 
-    let found = crate::ramfs::with_file(args, |data| {
-        write_bytes(data);
-        console().write_str("\n");
-    });
-
-    if found.is_none() {
-        console().write_str("file not found\n");
+    match crate::ramfs::lookup(args) {
+        Some(inode) => {
+            write_bytes(&inode.data.lock());
+            console().write_str("\n");
+        }
+        None => console().write_str("file not found\n"),
     }
 }
 

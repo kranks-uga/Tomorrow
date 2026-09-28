@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use crate::font::{draw_char, GLYPH_H, GLYPH_W};
 
 pub struct Console {

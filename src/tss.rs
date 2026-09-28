@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #[repr(C, packed)]
 pub struct Tss {
     reserved0: u32,

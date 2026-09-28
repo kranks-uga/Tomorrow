@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use crate::pml4;
 use crate::pmm;
 use crate::scheduler::Context;

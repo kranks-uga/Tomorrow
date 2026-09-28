@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 unsafe extern "C" {
     static _kernel_start: u8;
     static _kernel_end: u8;

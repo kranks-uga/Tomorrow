@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 fn write(base: u64, reg: u32, val: u32) {
     unsafe{
         core::ptr::write_volatile((base + reg as u64) as *mut u32, val);

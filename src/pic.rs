@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 pub fn disable() {
     unsafe {                                                                                                                                                                               
         // ICW1: инициализация                                                                                                                                                             
