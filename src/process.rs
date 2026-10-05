@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use crate::pml4;
 use crate::pmm;
+use crate::ramfs::Inode;
 use crate::scheduler::Context;
 use crate::vmm::PAGE_USER;
 use crate::vmm::PAGE_WRITABLE;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 #[derive(PartialEq)]
 pub enum ProcessState {
@@ -26,6 +29,12 @@ pub struct Process {
     pub kernel_stack_phys: u64,
     pub user_stack_phys: u64,
     pub context: Context,
+    pub fds: Vec<Option<OpenFile>>,
+}
+
+pub struct OpenFile {
+    pub inode: Arc<Inode>,
+    pub offset: usize,
 }
 
 impl Process {
@@ -118,6 +127,7 @@ impl Process {
                 rsp: user_stack_top,
                 cr3,
                 kernel_stack: stack_top,
+                fds: Vec::from(None, None, None),
             },
         }
     }
