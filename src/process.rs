@@ -6,6 +6,7 @@ use crate::scheduler::Context;
 use crate::vmm::PAGE_USER;
 use crate::vmm::PAGE_WRITABLE;
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 
 #[derive(PartialEq)]
@@ -127,8 +128,8 @@ impl Process {
                 rsp: user_stack_top,
                 cr3,
                 kernel_stack: stack_top,
-                fds: Vec::from(None, None, None),
             },
+            fds: Vec::from([None, None, None]),
         }
     }
 }
