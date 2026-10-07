@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use crate::{pmm, scheduler};
+use crate::{pmm, process::Process, scheduler};
 
 // Linux x86-64 syscall numbers
 pub const SYS_READ: u64 = 0;
@@ -17,6 +17,14 @@ pub static mut SYSCALL_KERNEL_RSP: u64 = 0;
 const MSR_STAR: u32 = 0xC0000081;
 const MSR_LSTAR: u32 = 0xC0000082;
 const MSR_SYSCALL_MASK: u32 = 0xC0000084;
+
+// Номера ошибок
+const EFAULT: u64 = 14;
+const ENOENT: u64 = 2;
+const ESRCH: u64 = 3;
+const EINVAL: u64 = 22;
+const EMFILE: u64 = 24;
+const ENAMETOOLONG: u64 = 36;
 
 unsafe fn write_msr(msr: u32, value: u64) {
     let low = value as u32;
@@ -86,6 +94,19 @@ pub unsafe extern "C" fn syscall_handler(
     }
 }
 
+fn user_range_ok(p: &Process, ptr: u64, len: u64) -> bool {
+    let Some(ptr_end) = ptr.checked_add(len) else {
+        return false;
+    };
+
+    for &(start, end) in p.user_regions.iter() {
+        if start <= ptr && ptr_end <= end {
+            return true;
+        }
+    }
+    false
+}
+
 /// Проверяет `Process::syscall_mask` текущего процесса — бит `nr` должен быть
 /// установлен, иначе syscall запрещён. Маска заполняется при создании
 /// процесса (см. process.rs), но раньше ничем не проверялась.
@@ -105,6 +126,31 @@ unsafe fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
         return len;
     }
     u64::MAX
+}
+
+fn err(e: u64) -> u64 {
+    (-(e as i64)) as u64
+}
+
+unsafe fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
+    let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() else {
+        return err(ESRCH);
+    };
+    if path_len == 0 {
+        return err(EINVAL);
+    }
+    if path_len >= crate::ramfs::MAX_PATH as u64 {
+        return err(ENAMETOOLONG);
+    }
+
+    if !user_range_ok(p, path_ptr, path_len) {
+        return err(EFAULT);
+    }
+
+    let src = core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize);
+    let mut name_buf = [0u8; crate::ramfs::MAX_PATH];
+    name_buf[..src.len()].copy_from_slice(src);
+    let name = &name_buf[..src.len()];
 }
 
 unsafe fn sys_exit(_code: u64) -> ! {

@@ -3,6 +3,8 @@ use crate::shell::parse_octal;
 use alloc::{string::String, sync::Arc, vec::Vec};
 use spin::Mutex;
 
+pub const MAX_PATH: usize = 100;
+
 pub struct Inode {
     pub data: Mutex<Vec<u8>>,
 }
