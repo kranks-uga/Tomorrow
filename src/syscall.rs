@@ -213,6 +213,10 @@ unsafe fn sys_read(fd: u64, buf: u64, len: u64) -> u64 {
 }
 
 unsafe fn sys_exit(_code: u64) -> ! {
+    if let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() {
+        p.state = crate::process::ProcessState::Dead;
+        scheduler::yield_now();
+    }
     loop {}
 }
 
