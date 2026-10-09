@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use crate::{pmm, process::Process, scheduler};
+use crate::{
+    pmm,
+    process::{OpenFile, Process},
+    scheduler,
+};
 
 // Linux x86-64 syscall numbers
 pub const SYS_READ: u64 = 0;
@@ -25,6 +29,11 @@ const ESRCH: u64 = 3;
 const EINVAL: u64 = 22;
 const EMFILE: u64 = 24;
 const ENAMETOOLONG: u64 = 36;
+
+/// Предел размера fd-таблицы процесса (включая 0/1/2).
+const MAX_FDS: usize = 16;
+/// fd 0/1/2 зарезервированы под консоль, файлы выдаются с 3.
+const FIRST_FILE_FD: usize = 3;
 
 unsafe fn write_msr(msr: u32, value: u64) {
     let low = value as u32;
@@ -88,6 +97,7 @@ pub unsafe extern "C" fn syscall_handler(
     }
     match nr {
         SYS_WRITE => sys_write(arg1, arg2 as *const u8, arg3),
+        SYS_OPEN => sys_open(arg1, arg2),
         SYS_EXIT => sys_exit(arg1),
         SYS_YIELD => sys_yield(),
         _ => u64::MAX,
@@ -151,6 +161,22 @@ unsafe fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
     let mut name_buf = [0u8; crate::ramfs::MAX_PATH];
     name_buf[..src.len()].copy_from_slice(src);
     let name = &name_buf[..src.len()];
+
+    let Some(inode) = crate::ramfs::lookup(name) else {
+        return err(ENOENT);
+    };
+    let file = OpenFile { inode, offset: 0 };
+
+    // Первый свободный слот начиная с 3, иначе — растим таблицу до MAX_FDS.
+    if let Some(fd) = (FIRST_FILE_FD..p.fds.len()).find(|&i| p.fds[i].is_none()) {
+        p.fds[fd] = Some(file);
+        return fd as u64;
+    }
+    if p.fds.len() >= MAX_FDS {
+        return err(EMFILE);
+    }
+    p.fds.push(Some(file));
+    (p.fds.len() - 1) as u64
 }
 
 unsafe fn sys_exit(_code: u64) -> ! {
