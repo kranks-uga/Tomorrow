@@ -4,6 +4,7 @@ use crate::{
     process::{OpenFile, Process},
     scheduler,
 };
+use core::cmp::min;
 
 // Linux x86-64 syscall numbers
 pub const SYS_READ: u64 = 0;
@@ -26,6 +27,7 @@ const MSR_SYSCALL_MASK: u32 = 0xC0000084;
 const EFAULT: u64 = 14;
 const ENOENT: u64 = 2;
 const ESRCH: u64 = 3;
+const EBADF: u64 = 9;
 const EINVAL: u64 = 22;
 const EMFILE: u64 = 24;
 const ENAMETOOLONG: u64 = 36;
@@ -97,6 +99,7 @@ pub unsafe extern "C" fn syscall_handler(
     }
     match nr {
         SYS_WRITE => sys_write(arg1, arg2 as *const u8, arg3),
+        SYS_READ => sys_read(arg1, arg2, arg3),
         SYS_OPEN => sys_open(arg1, arg2),
         SYS_EXIT => sys_exit(arg1),
         SYS_YIELD => sys_yield(),
@@ -177,6 +180,36 @@ unsafe fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
     }
     p.fds.push(Some(file));
     (p.fds.len() - 1) as u64
+}
+
+unsafe fn sys_read(fd: u64, buf: u64, len: u64) -> u64 {
+    let fd = fd as usize;
+    let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() else {
+        return err(ESRCH);
+    };
+    if fd >= p.fds.len() {
+        return err(EBADF);
+    }
+
+    if !user_range_ok(p, buf, len) {
+        return err(EFAULT);
+    }
+
+    let Some(f) = p.fds[fd].as_mut() else {
+        return err(EBADF);
+    };
+
+    let data = f.inode.data.lock();
+    if f.offset >= data.len() {
+        return 0;
+    }
+    let left = data.len() - f.offset;
+    let n = min(len as usize, left);
+    let dst = core::slice::from_raw_parts_mut(buf as *mut u8, n);
+    let src = &data[f.offset..f.offset + n];
+    dst.copy_from_slice(src);
+    f.offset += n;
+    n as u64
 }
 
 unsafe fn sys_exit(_code: u64) -> ! {
