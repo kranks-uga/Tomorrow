@@ -293,6 +293,42 @@ pub extern "C" fn process_b() -> ! {
     )
 }
 
+#[unsafe(naked)]
+pub extern "C" fn process_f() -> ! {
+    core::arch::naked_asm!(
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "syscall",
+        "mov r12, rax",
+        "sub rsp, 64",
+        "3:",
+        "mov rax, 0",
+        "mov rdi, r12",
+        "mov rsi, rsp",
+        "mov rdx, 16",
+        "syscall",
+        "test rax, rax",
+        "jz 4f",
+        "js 4f",
+        "mov rdx, rax",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "mov rsi, rsp",
+        "syscall",
+        "jmp 3b",
+        "4:",
+        "mov rax, 3",
+        "mov rdi, r12",
+        "syscall",
+        "mov rax, 60",
+        "xor rdi, rdi",
+        "syscall",
+        "0: jmp 0b",
+        "1: .ascii \"hello.txt\"",
+    )
+}
+
 #[no_mangle]
 pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     let mut xsdt_addr: u64 = 0;
@@ -429,7 +465,8 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             let sig = unsafe { &*(entry_addr as *const [u8; 4]) };
 
             if sig == b"MCFG" {
-                let mcfg_base = unsafe { core::ptr::read_unaligned((entry_addr + 44) as *const u64) };
+                let mcfg_base =
+                    unsafe { core::ptr::read_unaligned((entry_addr + 44) as *const u64) };
                 kprint!("MCFG: ");
                 write_hex!(mcfg_base);
                 kprint!("\n");
@@ -504,8 +541,24 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
 
     // === Scheduler ===
     unsafe {
-        let proc_a = process::Process::new(1, 0b11, 0, process_a as *const () as u64);
-        let proc_b = process::Process::new(2, 0b11, 0, process_b as *const () as u64);
+        let proc_a = process::Process::new(
+            1,
+            crate::syscall::SYSCALL_MASK,
+            0,
+            process_a as *const () as u64,
+        );
+        let proc_b = process::Process::new(
+            2,
+            crate::syscall::SYSCALL_MASK,
+            0,
+            process_b as *const () as u64,
+        );
+        let proc_f = process::Process::new(
+            3,
+            crate::syscall::SYSCALL_MASK,
+            0,
+            process_f as *const () as u64,
+        );
         (&raw mut scheduler::SCHEDULER)
             .as_mut()
             .unwrap()

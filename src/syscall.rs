@@ -14,6 +14,13 @@ pub const SYS_CLOSE: u64 = 3;
 pub const SYS_EXIT: u64 = 60;
 pub const SYS_YIELD: u64 = 24;
 
+pub const SYSCALL_MASK: u64 = (1 << SYS_READ)
+    | (1 << SYS_WRITE)
+    | (1 << SYS_OPEN)
+    | (1 << SYS_CLOSE)
+    | (1 << SYS_YIELD)
+    | (1 << SYS_EXIT);
+
 /// Вершина ядерного стека для syscall-обработчика.
 /// Экспортируется в syscall_entry.s через #[no_mangle].
 #[no_mangle]
@@ -101,6 +108,7 @@ pub unsafe extern "C" fn syscall_handler(
         SYS_WRITE => sys_write(arg1, arg2 as *const u8, arg3),
         SYS_READ => sys_read(arg1, arg2, arg3),
         SYS_OPEN => sys_open(arg1, arg2),
+        SYS_CLOSE => sys_close(arg1),
         SYS_EXIT => sys_exit(arg1),
         SYS_YIELD => sys_yield(),
         _ => u64::MAX,
@@ -212,12 +220,30 @@ unsafe fn sys_read(fd: u64, buf: u64, len: u64) -> u64 {
     n as u64
 }
 
+unsafe fn sys_close(fd: u64) -> u64 {
+    let fd = fd as usize;
+    let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() else {
+        return err(ESRCH);
+    };
+    if fd >= p.fds.len() {
+        return err(EBADF);
+    }
+    if p.fds[fd].is_none() {
+        return err(EBADF);
+    }
+
+    p.fds[fd] = None;
+    0
+}
+
 unsafe fn sys_exit(_code: u64) -> ! {
     if let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() {
         p.state = crate::process::ProcessState::Dead;
-        scheduler::yield_now();
+        core::arch::asm!("sti");
     }
-    loop {}
+    loop {
+        core::arch::asm!("hlt");
+    }
 }
 
 unsafe fn sys_yield() -> u64 {
