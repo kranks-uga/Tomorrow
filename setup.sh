@@ -23,26 +23,30 @@ install_packages() {
                 curl git build-essential \
                 gcc nasm grub-pc-bin \
                 grub-common xorriso \
-                qemu-system-x86 \
-                mtools
+                grub-efi-amd64-bin \
+                qemu-system-x86 qemu-system-gui \
+                ovmf mtools
             ;;
         arch|manjaro)
             sudo pacman -Sy --noconfirm \
                 curl git base-devel \
                 gcc nasm grub \
                 xorriso qemu-system-x86 \
+                qemu-ui-gtk edk2-ovmf \
                 mtools
             ;;
         fedora)
             sudo dnf install -y \
                 curl git gcc \
                 nasm grub2-tools \
+                grub2-efi-x64-modules \
                 xorriso qemu-system-x86 \
+                qemu-ui-gtk edk2-ovmf \
                 mtools
             ;;
         *)
             echo "Неизвестный дистрибутив: $DISTRO"
-            echo "Установи вручную: gcc, nasm, grub, xorriso, qemu"
+            echo "Установи вручную: gcc, nasm, grub, xorriso, qemu, ovmf"
             exit 1
             ;;
     esac
@@ -89,4 +93,4 @@ echo -n "rust: ";   rustc --version
 echo -n "cargo: ";  cargo --version
 
 echo ""
-echo "=== Готово! Теперь можно собирать: ./make.sh ==="
+echo "=== Готово! Сборка: ./make.sh, запуск в QEMU: ./run.sh ==="

@@ -1,7 +1,13 @@
 #!/usr/bin/bash
 set -e
 
-cargo +nightly build -Zbuild-std=core,compiler_builtins,alloc \
+# С rustup берём nightly из rust-toolchain.toml. Без rustup (Rust из пакетов
+# дистрибутива — stable) разрешаем -Z флаги через RUSTC_BOOTSTRAP.
+if ! command -v rustup &> /dev/null; then
+    export RUSTC_BOOTSTRAP=1
+fi
+
+cargo build -Zbuild-std=core,compiler_builtins,alloc \
     -Zbuild-std-features=compiler-builtins-mem
 
 mkdir -p iso/boot/grub
