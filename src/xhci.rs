@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use crate::{kprint, pmm, write_hex, CONSOLE};
 
 // Identity map покрывает всю физическую память (boot.s: pdpt0/pdpt1 × 1GB huge pages)
@@ -578,7 +579,7 @@ pub unsafe fn poll_hid() {
             if keycode == 0 {
                 continue;
             }
-            if HID_PREV.contains(&keycode) {
+            if (*(&raw const HID_PREV)).contains(&keycode) {
                 continue;
             } // зажата с прошлого раза — не новое нажатие
             if let Some(ch) = hid_keycode_to_char(keycode, shift) {
@@ -586,7 +587,7 @@ pub unsafe fn poll_hid() {
             }
         }
 
-        HID_PREV = cur;
+        *(&raw mut HID_PREV) = cur;
     }
 
     // Перезапускаем transfer один раз после дренажа: дальше контроллер сам

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PSF2 header: magic(4) + version(4) + headersize(4) + flags(4) + numglyph(4) + bytesperglyph(4) + height(4) + width(4)
 const FONT_DATA: &[u8] = include_bytes!("font.psf");
 

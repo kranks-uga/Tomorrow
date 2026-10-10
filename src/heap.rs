@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem;
 use core::ptr::null_mut;
@@ -241,10 +242,6 @@ pub fn self_test() {
     let p = kmalloc_aligned(64, 4096);
     assert!(!p.is_null());
     assert_eq!(p as usize % 4096, 0);
-}
-
-pub fn kmalloc(size: usize) -> *mut u8 {
-    kmalloc_aligned(size, 8)
 }
 
 pub fn kmalloc_aligned(size: usize, align: usize) -> *mut u8 {

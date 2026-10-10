@@ -1,10 +1,4 @@
-fn read(base: u64, reg: u32) -> u32 {                                                                                                                                                         
-    unsafe {                                                                                                                                                                                  
-        core::ptr::write_volatile(base as *mut u32, reg);                                                                                                                                     
-        core::ptr::read_volatile((base + 0x10) as *const u32)                                                                                                                                 
-    }                                                                                                                                                                                         
-}                                                                                                                                                                                             
-                                                                                                                                                                                                
+// SPDX-License-Identifier: GPL-3.0-or-later
 fn write(base: u64, reg: u32, val: u32) {                                                                                                                                                     
     unsafe {
         core::ptr::write_volatile(base as *mut u32, reg);                                                                                                                                     

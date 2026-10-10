@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use crate::CONSOLE;
 use core::arch::global_asm;
 
@@ -40,7 +41,7 @@ pub fn init() {
 
     let descriptor = IdtDescriptor {
         limit: (256 * 16 - 1) as u16,
-        base: unsafe { core::ptr::addr_of!(IDT) as u64 },
+        base: core::ptr::addr_of!(IDT) as u64,
     };
     unsafe {
         core::arch::asm!("lidt [{}]", in(reg) &descriptor);
@@ -61,7 +62,6 @@ pub fn set_handler(vector: u8, handler: u64) {
 }
 
 global_asm!(
-    ".intel_syntax noprefix",
     ".globl spurious_handler",
     "spurious_handler:",
     "iretq",

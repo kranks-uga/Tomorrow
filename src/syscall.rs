@@ -1,4 +1,10 @@
-use crate::{pmm, scheduler};
+// SPDX-License-Identifier: GPL-3.0-or-later
+use crate::{
+    pmm,
+    process::{OpenFile, Process},
+    scheduler,
+};
+use core::cmp::min;
 
 // Linux x86-64 syscall numbers
 pub const SYS_READ: u64 = 0;
@@ -8,6 +14,13 @@ pub const SYS_CLOSE: u64 = 3;
 pub const SYS_EXIT: u64 = 60;
 pub const SYS_YIELD: u64 = 24;
 
+pub const SYSCALL_MASK: u64 = (1 << SYS_READ)
+    | (1 << SYS_WRITE)
+    | (1 << SYS_OPEN)
+    | (1 << SYS_CLOSE)
+    | (1 << SYS_YIELD)
+    | (1 << SYS_EXIT);
+
 /// Вершина ядерного стека для syscall-обработчика.
 /// Экспортируется в syscall_entry.s через #[no_mangle].
 #[no_mangle]
@@ -16,6 +29,20 @@ pub static mut SYSCALL_KERNEL_RSP: u64 = 0;
 const MSR_STAR: u32 = 0xC0000081;
 const MSR_LSTAR: u32 = 0xC0000082;
 const MSR_SYSCALL_MASK: u32 = 0xC0000084;
+
+// Номера ошибок
+const EFAULT: u64 = 14;
+const ENOENT: u64 = 2;
+const ESRCH: u64 = 3;
+const EBADF: u64 = 9;
+const EINVAL: u64 = 22;
+const EMFILE: u64 = 24;
+const ENAMETOOLONG: u64 = 36;
+
+/// Предел размера fd-таблицы процесса (включая 0/1/2).
+const MAX_FDS: usize = 16;
+/// fd 0/1/2 зарезервированы под консоль, файлы выдаются с 3.
+const FIRST_FILE_FD: usize = 3;
 
 unsafe fn write_msr(msr: u32, value: u64) {
     let low = value as u32;
@@ -71,14 +98,43 @@ pub unsafe extern "C" fn syscall_handler(
     arg1: u64,
     arg2: u64,
     arg3: u64,
-    arg4: u64,
-    arg5: u64,
+    _arg4: u64,
+    _arg5: u64,
 ) -> u64 {
+    if !syscall_allowed(nr) {
+        return u64::MAX;
+    }
     match nr {
         SYS_WRITE => sys_write(arg1, arg2 as *const u8, arg3),
+        SYS_READ => sys_read(arg1, arg2, arg3),
+        SYS_OPEN => sys_open(arg1, arg2),
+        SYS_CLOSE => sys_close(arg1),
         SYS_EXIT => sys_exit(arg1),
         SYS_YIELD => sys_yield(),
         _ => u64::MAX,
+    }
+}
+
+fn user_range_ok(p: &Process, ptr: u64, len: u64) -> bool {
+    let Some(ptr_end) = ptr.checked_add(len) else {
+        return false;
+    };
+
+    for &(start, end) in p.user_regions.iter() {
+        if start <= ptr && ptr_end <= end {
+            return true;
+        }
+    }
+    false
+}
+
+/// Проверяет `Process::syscall_mask` текущего процесса — бит `nr` должен быть
+/// установлен, иначе syscall запрещён. Маска заполняется при создании
+/// процесса (см. process.rs), но раньше ничем не проверялась.
+unsafe fn syscall_allowed(nr: u64) -> bool {
+    match &scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current] {
+        Some(p) if nr < 64 => (p.syscall_mask >> nr) & 1 != 0,
+        _ => false,
     }
 }
 
@@ -93,8 +149,101 @@ unsafe fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
     u64::MAX
 }
 
+fn err(e: u64) -> u64 {
+    (-(e as i64)) as u64
+}
+
+unsafe fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
+    let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() else {
+        return err(ESRCH);
+    };
+    if path_len == 0 {
+        return err(EINVAL);
+    }
+    if path_len >= crate::ramfs::MAX_PATH as u64 {
+        return err(ENAMETOOLONG);
+    }
+
+    if !user_range_ok(p, path_ptr, path_len) {
+        return err(EFAULT);
+    }
+
+    let src = core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize);
+    let mut name_buf = [0u8; crate::ramfs::MAX_PATH];
+    name_buf[..src.len()].copy_from_slice(src);
+    let name = &name_buf[..src.len()];
+
+    let Some(inode) = crate::ramfs::lookup(name) else {
+        return err(ENOENT);
+    };
+    let file = OpenFile { inode, offset: 0 };
+
+    // Первый свободный слот начиная с 3, иначе — растим таблицу до MAX_FDS.
+    if let Some(fd) = (FIRST_FILE_FD..p.fds.len()).find(|&i| p.fds[i].is_none()) {
+        p.fds[fd] = Some(file);
+        return fd as u64;
+    }
+    if p.fds.len() >= MAX_FDS {
+        return err(EMFILE);
+    }
+    p.fds.push(Some(file));
+    (p.fds.len() - 1) as u64
+}
+
+unsafe fn sys_read(fd: u64, buf: u64, len: u64) -> u64 {
+    let fd = fd as usize;
+    let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() else {
+        return err(ESRCH);
+    };
+    if fd >= p.fds.len() {
+        return err(EBADF);
+    }
+
+    if !user_range_ok(p, buf, len) {
+        return err(EFAULT);
+    }
+
+    let Some(f) = p.fds[fd].as_mut() else {
+        return err(EBADF);
+    };
+
+    let data = f.inode.data.lock();
+    if f.offset >= data.len() {
+        return 0;
+    }
+    let left = data.len() - f.offset;
+    let n = min(len as usize, left);
+    let dst = core::slice::from_raw_parts_mut(buf as *mut u8, n);
+    let src = &data[f.offset..f.offset + n];
+    dst.copy_from_slice(src);
+    f.offset += n;
+    n as u64
+}
+
+unsafe fn sys_close(fd: u64) -> u64 {
+    let fd = fd as usize;
+    let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() else {
+        return err(ESRCH);
+    };
+    if fd >= p.fds.len() {
+        return err(EBADF);
+    }
+    if p.fds[fd].is_none() {
+        return err(EBADF);
+    }
+
+    p.fds[fd] = None;
+    0
+}
+
 unsafe fn sys_exit(_code: u64) -> ! {
-    loop {}
+    if let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() {
+        p.state = crate::process::ProcessState::Dead;
+        core::arch::asm!("sti");
+    }
+    loop {
+        core::arch::asm!("hlt");
+    }
 }
 
 unsafe fn sys_yield() -> u64 {

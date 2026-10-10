@@ -1,7 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+use crate::pml4;
+use crate::pmm;
+use crate::ramfs::Inode;
 use crate::scheduler::Context;
+use crate::vmm::PAGE_SIZE;
 use crate::vmm::PAGE_USER;
 use crate::vmm::PAGE_WRITABLE;
-use crate::{pml4, pmm};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 #[derive(PartialEq)]
 pub enum ProcessState {
@@ -18,12 +24,19 @@ pub struct Process {
     pub state: ProcessState,
     pub kernel_stack: u64,
     pub user_stack: u64,
+    pub user_regions: [(u64, u64); 2],
     // Базовые ФИЗИЧЕСКИЕ адреса страниц от pmm::alloc — нужны, чтобы reap()
     // мог вернуть их в PMM. kernel_stack/user_stack — это вершины (virt),
     // освобождать по ним нельзя.
     pub kernel_stack_phys: u64,
     pub user_stack_phys: u64,
     pub context: Context,
+    pub fds: Vec<Option<OpenFile>>,
+}
+
+pub struct OpenFile {
+    pub inode: Arc<Inode>,
+    pub offset: usize,
 }
 
 impl Process {
@@ -64,9 +77,6 @@ impl Process {
         let user_code_virt: u64 = 0x0000_0200_0000_0000 + pid * 0x1000;
 
         unsafe {
-            extern "C" {
-                static pml4: crate::vmm::PageTable;
-            }
             let pml4_ptr = &pml4 as *const _ as *mut crate::vmm::PageTable;
             (*pml4_ptr).map(
                 user_stack_virt,
@@ -95,6 +105,10 @@ impl Process {
             kernel_stack: stack_top,
             user_stack: user_stack_top,
             kernel_stack_phys: stack,
+            user_regions: [
+                (user_code_virt, user_code_virt + PAGE_SIZE),
+                (user_stack_virt, user_stack_virt + PAGE_SIZE),
+            ],
             user_stack_phys,
             context: Context {
                 rax: 0,
@@ -120,6 +134,7 @@ impl Process {
                 cr3,
                 kernel_stack: stack_top,
             },
+            fds: Vec::from([None, None, None]),
         }
     }
 }

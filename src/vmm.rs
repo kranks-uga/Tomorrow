@@ -1,6 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 pub const PAGE_PRESENT: u64 = 1 << 0;
 pub const PAGE_WRITABLE: u64 = 1 << 1;
 pub const PAGE_USER: u64 = 1 << 2;
+pub const PAGE_SIZE: u64 = 4096;
 pub const PAGE_NO_EXECUTE: u64 = 1 << 63;
 
 #[repr(C, align(4096))]

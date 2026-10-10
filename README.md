@@ -102,7 +102,7 @@
 - Linux (Ubuntu/Debian, Arch, Fedora)
 - Rust nightly
 - `grub-mkrescue`, `xorriso`, `gcc`, `nasm`
-- `qemu-system-x86_64` — для запуска в эмуляторе
+- `qemu-system-x86_64` + OVMF (UEFI-прошивка) — для запуска в эмуляторе
 
 Автоматическая установка:
 ```bash
@@ -119,14 +119,34 @@
 
 Собирает ELF-ядро через `cargo` и упаковывает его в загрузочный ISO-образ `tomorrow.iso`.
 
+Если Rust установлен из пакетов дистрибутива (stable, без rustup), `make.sh`
+сам включит `RUSTC_BOOTSTRAP=1` для nightly-флагов `-Zbuild-std`.
+
 ### Запуск в QEMU
 
 ```bash
+./run.sh
+```
+
+Скрипт запускает QEMU с UEFI (OVMF) и чипсетом q35:
+
+```bash
 qemu-system-x86_64 \
+    -machine q35 \
+    -bios /usr/share/edk2/x64/OVMF.4m.fd \
     -cdrom tomorrow.iso \
     -m 256M \
     -serial stdio
 ```
+
+**Почему UEFI обязателен:** ядро включает APIC через таблицу XSDT (ACPI 2.0).
+SeaBIOS, который QEMU использует по умолчанию, отдаёт только ACPI 1.0 —
+APIC не поднимается, прерываний нет, клавиатура и таймер не работают.
+`q35` нужен для PCIe (таблица MCFG) — без него не находится xHCI.
+
+Если QEMU собран без GTK, `run.sh` откроет экран через VNC:
+`vncviewer ::1:5900`. Окно напрямую — пакет `qemu-ui-gtk` (Arch/Fedora)
+или `qemu-system-gui` (Debian/Ubuntu).
 
 ### Запись на реальное железо
 
@@ -205,3 +225,7 @@ md/               — подробная документация подсист
 0x0000_0100_0000_0000 ─┤  user stack
 0x0000_0000_0000_0000  ┘
 ```
+
+## Лицензия
+
+Tomorrow OS распространяется под лицензией [GNU GPL v3.0 или более поздней версии](LICENSE) (`GPL-3.0-or-later`).

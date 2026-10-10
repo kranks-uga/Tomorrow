@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use crate::console::Console;
 use crate::process::{Process, ProcessState};
 use crate::{pmm, scheduler, CONSOLE, TICKS};
@@ -164,7 +165,7 @@ fn cmd_help() {
          \x20 echo <text>   print text\n\
          \x20 ticks         show timer tick count\n\
          \x20 ps            list processes\n\
-         \x20 spawn <a|b>   create a new demo process (a or b)\n\
+         \x20 spawn <a|b|f>   create a new demo process (a or b or f)\n\
          \x20 kill <pid>    terminate a process by pid\n\
          \x20 mem           show free physical memory\n\
          \x20 reboot        restart the machine\n\
@@ -258,6 +259,8 @@ fn cmd_spawn(args: &[u8]) {
         crate::process_a as *const () as u64
     } else if eq(args, b"b") {
         crate::process_b as *const () as u64
+    } else if eq(args, b"f") {
+        crate::process_f as *const () as u64
     } else {
         console().write_str("usage: spawn <a|b>\n");
         return;
@@ -272,7 +275,7 @@ fn cmd_spawn(args: &[u8]) {
     }
 
     let pid = unsafe { scheduler::next_pid() };
-    let proc = Process::new(pid, 0b11, 0, entry);
+    let proc = Process::new(pid, crate::syscall::SYSCALL_MASK, 0, entry);
     sched.add_process(proc);
 
     console().write_str("spawned pid ");
@@ -420,13 +423,12 @@ fn cmd_cat(args: &[u8]) {
         return;
     }
 
-    let found = crate::ramfs::with_file(args, |data| {
-        write_bytes(data);
-        console().write_str("\n");
-    });
-
-    if found.is_none() {
-        console().write_str("file not found\n");
+    match crate::ramfs::lookup(args) {
+        Some(inode) => {
+            write_bytes(&inode.data.lock());
+            console().write_str("\n");
+        }
+        None => console().write_str("file not found\n"),
     }
 }
 
