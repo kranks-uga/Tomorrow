@@ -427,7 +427,8 @@ unsafe fn set_configuration(
     config_value: u8,
 ) -> u32 {
     // SET_CONFIGURATION: bmRequestType=0x00, bRequest=9, wValue=config_value
-    let setup = (config_value as u64) << 16 | (9u64 << 8) | 0x00;
+    // bmRequestType = 0, поэтому младший байт не задаётся.
+    let setup = (config_value as u64) << 16 | (9u64 << 8);
     ctrl_out_nodata(slot_id, tr_ring, tr_enq, tr_pcs, setup)
 }
 
@@ -435,7 +436,8 @@ unsafe fn set_protocol(slot_id: u32, tr_ring: u64, tr_enq: &mut usize, tr_pcs: &
     // SET_PROTOCOL: bmRequestType=0x21, bRequest=0x0B, wValue=0 (Boot Protocol)
     // wIndex=0 (interface 0), wLength=0
     // Setup packet: [wLength:16][wIndex:16][wValue:16][bRequest:8][bmRequestType:8]
-    let setup: u64 = (0u64 << 48) | (0u64 << 32) | (0u64 << 16) | (0x0Bu64 << 8) | 0x21u64;
+    // wLength/wIndex/wValue = 0, поэтому заданы только младшие два байта.
+    let setup: u64 = (0x0Bu64 << 8) | 0x21u64;
     ctrl_out_nodata(slot_id, tr_ring, tr_enq, tr_pcs, setup)
 }
 
