@@ -5,8 +5,31 @@ use spin::Mutex;
 
 pub const MAX_PATH: usize = 100;
 
+/// Предел размера одного файла. Без него программа, пишущая в цикле, растит
+/// `Vec` до исчерпания кучи (1 MB) → паника аллокатора роняет всё ядро.
+pub const MAX_FILE_SIZE: usize = 64 * 1024;
+
 pub struct Inode {
     pub data: Mutex<Vec<u8>>,
+}
+
+impl Inode {
+    /// Записать `src` начиная с `offset`: существующие байты перезаписываются,
+    /// при выходе за конец файл растёт (дыра между концом и `offset` — нули).
+    /// Возвращает новый конец записи или `None`, если файл превысил бы
+    /// `MAX_FILE_SIZE` (тогда ничего не пишется).
+    pub fn write_at(&self, offset: usize, src: &[u8]) -> Option<usize> {
+        let end = offset.checked_add(src.len())?;
+        if end > MAX_FILE_SIZE {
+            return None;
+        }
+        let mut data = self.data.lock();
+        if data.len() < end {
+            data.resize(end, 0);
+        }
+        data[offset..end].copy_from_slice(src);
+        Some(end)
+    }
 }
 
 struct DirEntry {

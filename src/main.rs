@@ -329,6 +329,41 @@ pub extern "C" fn process_f() -> ! {
     )
 }
 
+#[unsafe(naked)]
+pub extern "C" fn process_w() -> ! {
+    core::arch::naked_asm!(
+        // fd = open("hello.txt", 9)
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "syscall",
+        "mov r12, rax",
+        // write(fd, "XYZ", 3): перезапись первых 3 байт
+        "mov rax, 1",
+        "mov rdi, r12",
+        "lea rsi, [rip + 2f]",
+        "mov rdx, 3",
+        "syscall",
+        // write(fd, "0123456789abcdefghij", 20): с offset 3 до 23 > 18, файл растёт
+        "mov rax, 1",
+        "mov rdi, r12",
+        "lea rsi, [rip + 5f]",
+        "mov rdx, 20",
+        "syscall",
+        // close(fd); exit(0)
+        "mov rax, 3",
+        "mov rdi, r12",
+        "syscall",
+        "mov rax, 60",
+        "xor rdi, rdi",
+        "syscall",
+        "0: jmp 0b",
+        "1: .ascii \"hello.txt\"",
+        "2: .ascii \"XYZ\"",
+        "5: .ascii \"0123456789abcdefghij\"",
+    )
+}
+
 #[no_mangle]
 pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     let mut xsdt_addr: u64 = 0;
@@ -552,12 +587,6 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             crate::syscall::SYSCALL_MASK,
             0,
             process_b as *const () as u64,
-        );
-        let proc_f = process::Process::new(
-            3,
-            crate::syscall::SYSCALL_MASK,
-            0,
-            process_f as *const () as u64,
         );
         (&raw mut scheduler::SCHEDULER)
             .as_mut()

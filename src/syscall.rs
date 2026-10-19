@@ -37,6 +37,7 @@ const ESRCH: u64 = 3;
 const EBADF: u64 = 9;
 const EINVAL: u64 = 22;
 const EMFILE: u64 = 24;
+const EFBIG: u64 = 27;
 const ENAMETOOLONG: u64 = 36;
 
 /// Предел размера fd-таблицы процесса (включая 0/1/2).
@@ -139,14 +140,35 @@ unsafe fn syscall_allowed(nr: u64) -> bool {
 }
 
 unsafe fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
-    if fd == 1 {
-        // Вывод идёт через шелл, а не напрямую в консоль: иначе он вклинивается
-        // в набираемую строку ввода (см. shell::program_output).
-        let slice = core::slice::from_raw_parts(buf, len as usize);
-        crate::shell::program_output(slice);
+    let fd = fd as usize;
+    let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() else {
+        return err(ESRCH);
+    };
+    if fd >= p.fds.len() {
+        return err(EBADF);
+    }
+
+    if !user_range_ok(p, buf as u64, len) {
+        return err(EFAULT);
+    }
+    let src = core::slice::from_raw_parts(buf, len as usize);
+
+    // stdout/stderr. Вывод идёт через шелл, а не напрямую в консоль: иначе он
+    // вклинивается в набираемую строку ввода (см. shell::program_output).
+    if fd == 1 || fd == 2 {
+        crate::shell::program_output(src);
         return len;
     }
-    u64::MAX
+
+    let Some(f) = p.fds[fd].as_mut() else {
+        return err(EBADF);
+    };
+
+    let Some(end) = f.inode.write_at(f.offset, src) else {
+        return err(EFBIG);
+    };
+    f.offset = end;
+    len
 }
 
 fn err(e: u64) -> u64 {

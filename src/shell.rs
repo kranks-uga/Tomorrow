@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use crate::console::Console;
 use crate::process::{Process, ProcessState};
+use crate::ramfs::create;
 use crate::{pmm, scheduler, CONSOLE, TICKS};
 
 const PROMPT: &str = "User@Tomorrow> ";
@@ -165,7 +166,7 @@ fn cmd_help() {
          \x20 echo <text>   print text\n\
          \x20 ticks         show timer tick count\n\
          \x20 ps            list processes\n\
-         \x20 spawn <a|b|f>   create a new demo process (a or b or f)\n\
+         \x20 spawn <a|b|f|w>   create a new demo process (a or b or f or w)\n\
          \x20 kill <pid>    terminate a process by pid\n\
          \x20 mem           show free physical memory\n\
          \x20 reboot        restart the machine\n\
@@ -261,6 +262,8 @@ fn cmd_spawn(args: &[u8]) {
         crate::process_b as *const () as u64
     } else if eq(args, b"f") {
         crate::process_f as *const () as u64
+    } else if eq(args, b"w") {
+        crate::process_w as *const () as u64
     } else {
         console().write_str("usage: spawn <a|b>\n");
         return;
