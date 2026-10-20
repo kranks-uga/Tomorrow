@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/banner.png" alt="Tomorrow OS" width="100%">
+</p>
+
 # Tomorrow OS
 
 [English](README.md) | **Русский**
