@@ -1,134 +1,144 @@
 # Tomorrow OS
 
-Безопасная x86-64 операционная система на Rust (no_std) с мандатной моделью прав доступа, изоляцией процессов по compartment-ам и совместимостью с Linux ABI.
+**English** | [Русский](README.ru.md)
 
-**Автор идеи:** Kirill Repin
+A secure x86-64 operating system written in Rust (no_std), with a mandatory access control model, compartment-based process isolation, and Linux ABI compatibility.
+
+**Original idea by:** Kirill Repin
 
 ---
 
-## Концепция
+## Concept
 
-Большинство ОС проверяют права при входе в систему, но дальше процесс получает привилегии «навсегда». Tomorrow строится на другом принципе: **каждое действие проверяется индивидуально**.
+Most operating systems check permissions at login, and after that a process keeps its privileges "forever". Tomorrow is built on a different principle: **every action is checked individually**.
 
-### Права доступа
+### Access rights
 
-Права хранятся в ядре и привязаны одновременно к двум сторонам:
+Rights are stored in the kernel and are bound to both sides at once:
 
-- **субъект** — пользователь или процесс, который что-то запрашивает
-- **объект** — файл, устройство или ресурс, к которому обращаются
+- **subject** — the user or process making a request
+- **object** — the file, device, or resource being accessed
 
-Только если права субъекта и допустимые права объекта пересекаются — действие разрешается. Это похоже на мандатный контроль доступа (MAC), но реализованный на уровне ядра с явными масками для каждой сущности.
+An action is allowed only if the subject's rights and the object's permitted rights overlap. This is similar to mandatory access control (MAC), but implemented at the kernel level with explicit masks for every entity.
 
-### Compartment-изоляция
+### Compartment isolation
 
-Процессы объединяются в **команды** (compartments) — изолированные группы, которые не видят и не могут напрямую влиять друг на друга. Взаимодействие с остальной системой — только через **брокеров**: специальные процессы-посредники, которые явно определены в ядре и проверяют каждый запрос.
+Processes are grouped into **compartments** — isolated groups that cannot see or directly affect each other. They interact with the rest of the system only through **brokers**: special intermediary processes that are explicitly defined in the kernel and check every request.
 
 ```
  ┌─────────────────┐     ┌─────────────────┐
  │  Compartment A  │     │  Compartment B  │
  │  proc1  proc2   │     │  proc3  proc4   │
  └────────┬────────┘     └─────────┬───────┘
-          │   только через брокера │
+          │    only via a broker   │
           └──────────┬─────────────┘
                 ┌────▼─────┐
-                │  Broker  │  ← проверяет права,
-                │          │    передаёт только
-                └──────────┘    разрешённые данные
+                │  Broker  │  ← checks rights,
+                │          │    passes through only
+                └──────────┘    permitted data
 ```
 
-### Linux ABI совместимость
+### Linux ABI compatibility
 
-Номера системных вызовов совпадают с Linux x86-64. Цель — запускать существующие Linux-бинарники без перекомпиляции, при этом применяя собственную модель безопасности на уровне ядра.
+System call numbers match Linux x86-64. The goal is to run existing Linux binaries without recompilation, while enforcing Tomorrow's own security model in the kernel.
 
 ---
 
-## Возможности
+## Features
 
-| Компонент | Статус |
+| Component | Status |
 |-----------|--------|
-| Multiboot2 boot (GRUB2) | готово |
-| Higher-half kernel (`0xFFFF800000000000`) | готово |
-| PMM — bitmap физических страниц (до 8 GB) | готово |
-| VMM — 4-уровневые таблицы страниц (4 KB) | готово |
-| Heap — bump-allocator (64 KB) | готово |
-| IDT + APIC (Local + IO APIC via ACPI MADT) | готово |
-| TSS + GDT (kernel/user сегменты) | готово |
-| Round-robin планировщик (до 64 процессов) | готово |
-| Контекст-свитч через прерывание таймера | готово |
-| Userspace ring-3 (iretq) | готово |
-| SYSCALL/SYSRET (MSR-based) | готово |
-| PS/2 клавиатура | готово |
-| Framebuffer-консоль + PSF-шрифт | готово |
-| PCI/PCIe enumeration (MCFG) | готово |
-| xHCI USB (драйвер + USB-клавиатура) | готово |
-| Интерактивный шелл | готово |
-| Управление процессами из шелла (spawn/kill) | готово |
-| initrd — загрузка модулей через GRUB | готово |
-| RAM FS (ramfs) — создание и запись файлов | готово |
-| ACPI shutdown / reboot | готово |
+| Multiboot2 boot (GRUB2) | done |
+| Higher-half kernel (`0xFFFF800000000000`) | done |
+| PMM — physical page bitmap (up to 8 GB) | done |
+| VMM — 4-level page tables (4 KB pages) | done |
+| Heap — free-list allocator (first-fit) | done |
+| IDT + APIC (Local + IO APIC via ACPI MADT) | done |
+| TSS + GDT (kernel/user segments) | done |
+| Round-robin scheduler (up to 64 processes) | done |
+| Timer-interrupt context switch | done |
+| Ring-3 userspace (iretq) | done |
+| SYSCALL/SYSRET (MSR-based) | done |
+| PS/2 keyboard | done |
+| Framebuffer console + PSF font | done |
+| PCI/PCIe enumeration (MCFG) | done |
+| xHCI USB (driver + USB keyboard) | done |
+| Interactive shell | done |
+| Process management from the shell (spawn/kill) | done |
+| initrd — modules loaded by GRUB | done |
+| RAM FS (ramfs) — `Arc`-based inodes, file creation and writing | done |
+| File syscalls — per-process fd table, open/read/close | done |
+| ACPI shutdown / reboot | done |
 
-### Команды шелла
+### Shell commands
 
-| Команда | Описание |
-|---------|----------|
-| `help` | список команд |
-| `clear` / `cls` | очистить экран |
-| `echo <текст>` | вывести текст |
-| `ticks` | показать счётчик таймерных тиков |
-| `ps` | список процессов |
-| `spawn <имя>` | запустить процесс из initrd |
-| `kill <pid>` | завершить процесс |
-| `mem` | статистика памяти |
-| `module` | список загруженных модулей |
-| `ls` | содержимое RAM FS |
-| `cat <файл>` | вывести файл |
-| `write <файл> <данные>` | записать данные в файл |
-| `create <файл>` | создать пустой файл |
-| `reboot` | перезагрузить систему |
-| `shutdown` / `poweroff` | выключить систему (ACPI) |
+| Command | Description |
+|---------|-------------|
+| `help` | list commands |
+| `clear` / `cls` | clear the screen |
+| `echo <text>` | print text |
+| `ticks` | show the timer tick counter |
+| `ps` | list processes |
+| `spawn <a\|b\|f>` | start a demo process (`f` reads `hello.txt` via syscalls) |
+| `kill <pid>` | terminate a process |
+| `mem` | memory statistics |
+| `module` | show loaded modules |
+| `ls` | list RAM FS contents |
+| `cat <file>` | print a file |
+| `write <file> <data>` | write data to a file |
+| `touch <file>` | create an empty file |
+| `rm <file>` | delete a file |
+| `reboot` | restart the system |
+| `shutdown` / `poweroff` | power off (ACPI) |
 
-### Системные вызовы
+### System calls
 
-| № | Название | Описание |
-|---|----------|----------|
-| 1 | `SYS_WRITE` | fd, buf, len |
-| 24 | `SYS_YIELD` | уступить процессор |
-| 60 | `SYS_EXIT` | завершить процесс |
+| # | Name | Arguments / description |
+|---|------|-------------------------|
+| 0 | `SYS_READ` | fd, buf, len — read from a file, 0 = end of file |
+| 1 | `SYS_WRITE` | fd, buf, len — fd 1 = console |
+| 2 | `SYS_OPEN` | path, len — open a ramfs file, returns an fd |
+| 3 | `SYS_CLOSE` | fd — close a file |
+| 24 | `SYS_YIELD` | yield the CPU |
+| 60 | `SYS_EXIT` | terminate the process |
+
+Errors are returned Linux-style as a negative `-errno` (`EBADF`, `ENOENT`, `EFAULT`, …).
+Each process may only use the syscalls allowed by its mask (`syscall_mask`).
 
 ---
 
-## Требования
+## Requirements
 
 - Linux (Ubuntu/Debian, Arch, Fedora)
 - Rust nightly
 - `grub-mkrescue`, `xorriso`, `gcc`, `nasm`
-- `qemu-system-x86_64` + OVMF (UEFI-прошивка) — для запуска в эмуляторе
+- `qemu-system-x86_64` + OVMF (UEFI firmware) — to run in an emulator
 
-Автоматическая установка:
+Automatic setup:
 ```bash
 ./setup.sh
 ```
 
 ---
 
-## Сборка
+## Building
 
 ```bash
 ./make.sh
 ```
 
-Собирает ELF-ядро через `cargo` и упаковывает его в загрузочный ISO-образ `tomorrow.iso`.
+Builds the ELF kernel with `cargo` and packs it into a bootable ISO image, `tomorrow.iso`.
 
-Если Rust установлен из пакетов дистрибутива (stable, без rustup), `make.sh`
-сам включит `RUSTC_BOOTSTRAP=1` для nightly-флагов `-Zbuild-std`.
+If Rust is installed from your distribution's packages (stable, no rustup), `make.sh`
+sets `RUSTC_BOOTSTRAP=1` automatically to allow the nightly `-Zbuild-std` flags.
 
-### Запуск в QEMU
+### Running in QEMU
 
 ```bash
 ./run.sh
 ```
 
-Скрипт запускает QEMU с UEFI (OVMF) и чипсетом q35:
+The script starts QEMU with UEFI (OVMF) and the q35 chipset:
 
 ```bash
 qemu-system-x86_64 \
@@ -139,93 +149,93 @@ qemu-system-x86_64 \
     -serial stdio
 ```
 
-**Почему UEFI обязателен:** ядро включает APIC через таблицу XSDT (ACPI 2.0).
-SeaBIOS, который QEMU использует по умолчанию, отдаёт только ACPI 1.0 —
-APIC не поднимается, прерываний нет, клавиатура и таймер не работают.
-`q35` нужен для PCIe (таблица MCFG) — без него не находится xHCI.
+**Why UEFI is required:** the kernel enables the APIC via the XSDT table (ACPI 2.0).
+SeaBIOS, which QEMU uses by default, only provides ACPI 1.0 — the APIC
+is never enabled, there are no interrupts, and the keyboard and timer don't work.
+`q35` is needed for PCIe (the MCFG table) — without it xHCI is not found.
 
-Если QEMU собран без GTK, `run.sh` откроет экран через VNC:
-`vncviewer ::1:5900`. Окно напрямую — пакет `qemu-ui-gtk` (Arch/Fedora)
-или `qemu-system-gui` (Debian/Ubuntu).
+If QEMU was built without GTK, `run.sh` exposes the screen over VNC:
+`vncviewer ::1:5900`. For a native window, install `qemu-ui-gtk` (Arch/Fedora)
+or `qemu-system-gui` (Debian/Ubuntu).
 
-### Запись на реальное железо
+### Writing to real hardware
 
 ```bash
 ./load.sh
 ```
 
-Скрипт покажет список дисков и запишет `tomorrow.iso` через `dd`.
+The script lists your disks and writes `tomorrow.iso` with `dd`.
+**Double-check the disk name** — the selected disk is overwritten completely.
 
 ---
 
-## Структура проекта
+## Project layout
 
 ```
 src/
-  boot.s           — старт 32→64 бит, page tables, higher half
-  boot.rs          — подключение boot.s через global_asm!
-  main.rs          — kernel_main, парсинг Multiboot2/ACPI, scheduler
-  pmm.rs           — физический менеджер памяти
-  vmm.rs           — виртуальный менеджер памяти
-  heap.rs          — bump-allocator
-  idt.rs           — дескрипторная таблица прерываний
+  boot.s           — 32→64-bit startup, page tables, higher half
+  boot.rs          — includes boot.s via global_asm!
+  main.rs          — kernel_main, Multiboot2/ACPI parsing, scheduler setup
+  pmm.rs           — physical memory manager
+  vmm.rs           — virtual memory manager
+  heap.rs          — free-list heap allocator
+  idt.rs           — interrupt descriptor table
   lapic.rs         — Local APIC
   ioapic.rs        — IO APIC
-  pic.rs           — отключение PIC 8259
-  hpet.rs          — HPET таймер
+  pic.rs           — disables the 8259 PIC
+  hpet.rs          — HPET timer
   tss.rs           — TSS + GDT
-  process.rs       — структура процесса и контекста
-  scheduler.rs     — round-robin планировщик
-  timer_switch.rs  — логика переключения контекста
-  syscall.rs       — обработчик системных вызовов
-  syscall_entry.s  — вход/выход SYSCALL (MSR)
-  timer.s          — обработчик прерывания таймера, context switch
-  switch.s         — start_first_process_ring3
-  keyboard.rs      — PS/2 клавиатура
-  keyboard.s       — ISR клавиатуры
-  console.rs       — framebuffer-консоль + line discipline
-  font.rs / font.psf — PSF-шрифт
-  pci.rs           — поиск xHCI через MCFG/PCIe
-  xhci.rs          — xHCI USB-контроллер и HID-клавиатура
-  shell.rs         — интерактивный шелл с командами
-  ramfs.rs         — RAM-файловая система
-boot/grub/grub.cfg — конфиг загрузчика (ядро + initrd)
-initrd.tar         — начальный RAM-диск с пользовательскими модулями
-md/               — подробная документация подсистем (см. раздел «Документация»)
+  process.rs       — process and context structures, fd table
+  scheduler.rs     — round-robin scheduler
+  syscall.rs       — system call handlers
+  syscall_entry.s  — SYSCALL entry/exit (MSR)
+  timer.s          — timer interrupt handler, context switch
+  switch.s         — context_switch (in-kernel switch)
+  keyboard.rs      — PS/2 keyboard
+  keyboard.s       — keyboard ISR
+  console.rs       — framebuffer console + line discipline
+  font.rs / font.psf — PSF font
+  pci.rs           — finds xHCI via MCFG/PCIe
+  xhci.rs          — xHCI USB controller and HID keyboard
+  shell.rs         — interactive shell
+  ramfs.rs         — RAM file system
+boot/grub/grub.cfg — bootloader config (kernel + initrd)
+initrd.tar         — initial RAM disk with user modules
+md/                — detailed subsystem docs (see "Documentation")
 ```
 
 ---
 
-## Документация
+## Documentation
 
-Подробные разборы подсистем лежат в каталоге [`md/`](md/):
+Detailed write-ups of each subsystem live in [`md/`](md/) (currently in Russian):
 
-| Документ | О чём |
+| Document | Topic |
 |----------|-------|
-| [`architecture.md`](md/architecture.md) | ядро целиком: загрузка, PMM/VMM/heap, IDT, APIC-таймер, TSS/GDT, процессы, планировщик, syscall |
-| [`xhci.md`](md/xhci.md) | USB-стек: xHCI-контроллер, перечисление устройств, хабы/TT, HID-клавиатура |
-| [`ramfs.md`](md/ramfs.md) | файловая система: initrd (tar) → heap, writable ramfs, команды `ls/cat/write/touch/rm` |
-| [`console.md`](md/console.md) | вывод на экран: framebuffer, рендер PSF2-шрифта, API `Console` |
-| [`shell.md`](md/shell.md) | ввод и шелл: клавиатура (PS/2 + USB), `on_char`, line discipline, диспетч команд |
+| [`architecture.md`](md/architecture.md) | the whole kernel: boot, PMM/VMM/heap, IDT, APIC timer, TSS/GDT, processes, scheduler, syscalls |
+| [`xhci.md`](md/xhci.md) | USB stack: xHCI controller, device enumeration, hubs/TT, HID keyboard |
+| [`ramfs.md`](md/ramfs.md) | file system: initrd (tar) → heap, writable ramfs, `ls/cat/write/touch/rm` commands |
+| [`console.md`](md/console.md) | screen output: framebuffer, PSF2 font rendering, the `Console` API |
+| [`shell.md`](md/shell.md) | input and shell: keyboard (PS/2 + USB), `on_char`, line discipline, command dispatch |
 
 ---
 
-## Архитектура
+## Architecture
 
-Подробное описание всех подсистем — в [`md/architecture.md`](md/architecture.md).
+A full description of all subsystems is in [`md/architecture.md`](md/architecture.md).
 
-Раскладка виртуальной памяти:
+Virtual memory layout:
 
 ```
 0xFFFF_FFFF_FFFF_FFFF  ┐
                        │  kernel space
-0xFFFF_8000_0000_0000 ─┤  ядро, стеки, heap
+0xFFFF_8000_0000_0000 ─┤  kernel, stacks, heap
        ...             │  non-canonical hole
 0x0000_0200_0000_0000 ─┤  user code
 0x0000_0100_0000_0000 ─┤  user stack
 0x0000_0000_0000_0000  ┘
 ```
 
-## Лицензия
+## License
 
-Tomorrow OS распространяется под лицензией [GNU GPL v3.0 или более поздней версии](LICENSE) (`GPL-3.0-or-later`).
+Tomorrow OS is licensed under the [GNU GPL v3.0 or later](LICENSE) (`GPL-3.0-or-later`).
