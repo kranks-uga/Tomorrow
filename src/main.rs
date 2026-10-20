@@ -7,6 +7,7 @@
 extern crate alloc;
 
 use crate::console::Console;
+use alloc::vec::Vec;
 use core::ptr::{addr_of, read_unaligned};
 
 mod boot;
@@ -581,12 +582,14 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             crate::syscall::SYSCALL_MASK,
             0,
             process_a as *const () as u64,
+            Vec::new(),
         );
         let proc_b = process::Process::new(
             2,
             crate::syscall::SYSCALL_MASK,
             0,
             process_b as *const () as u64,
+            Vec::new(),
         );
         (&raw mut scheduler::SCHEDULER)
             .as_mut()

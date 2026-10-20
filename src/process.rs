@@ -6,8 +6,18 @@ use crate::scheduler::Context;
 use crate::vmm::PAGE_SIZE;
 use crate::vmm::PAGE_USER;
 use crate::vmm::PAGE_WRITABLE;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+
+// Права rw
+pub const PERM_READ: u8 = 1 << 0;
+pub const PERM_WRITE: u8 = 1 << 1;
+
+pub struct Grant {
+    pub name: String,
+    pub perms: u8,
+}
 
 #[derive(PartialEq)]
 pub enum ProcessState {
@@ -32,15 +42,17 @@ pub struct Process {
     pub user_stack_phys: u64,
     pub context: Context,
     pub fds: Vec<Option<OpenFile>>,
+    pub grants: Vec<Grant>,
 }
 
 pub struct OpenFile {
+    pub perms: u8,
     pub inode: Arc<Inode>,
     pub offset: usize,
 }
 
 impl Process {
-    pub fn new(pid: u64, syscall_mask: u64, domain: u8, entry: u64) -> Self {
+    pub fn new(pid: u64, syscall_mask: u64, domain: u8, entry: u64, grants: Vec<Grant>) -> Self {
         let stack = unsafe { pmm::alloc() };
         let user_stack_phys = unsafe { pmm::alloc() };
 
@@ -135,6 +147,7 @@ impl Process {
                 kernel_stack: stack_top,
             },
             fds: Vec::from([None, None, None]),
+            grants,
         }
     }
 }

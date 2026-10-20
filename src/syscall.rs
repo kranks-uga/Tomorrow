@@ -198,7 +198,11 @@ unsafe fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
     let Some(inode) = crate::ramfs::lookup(name) else {
         return err(ENOENT);
     };
-    let file = OpenFile { inode, offset: 0 };
+    let file = OpenFile {
+        inode,
+        offset: 0,
+        perms: 0,
+    };
 
     // Первый свободный слот начиная с 3, иначе — растим таблицу до MAX_FDS.
     if let Some(fd) = (FIRST_FILE_FD..p.fds.len()).find(|&i| p.fds[i].is_none()) {

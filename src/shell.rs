@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use crate::console::Console;
-use crate::process::{Process, ProcessState};
+use crate::process::{Grant, Process, ProcessState, PERM_READ, PERM_WRITE};
 use crate::ramfs::create;
 use crate::{pmm, scheduler, CONSOLE, TICKS};
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::vec;
 
 const PROMPT: &str = "User@Tomorrow> ";
 const PROMPT_LEN: usize = PROMPT.len();
@@ -256,16 +259,28 @@ fn cmd_ps() {
 
 fn cmd_spawn(args: &[u8]) {
     // Выбираем демо-код по имени процесса.
-    let entry = if eq(args, b"a") {
-        crate::process_a as *const () as u64
+    let (entry, grants) = if eq(args, b"a") {
+        (crate::process_a as *const () as u64, Vec::new())
     } else if eq(args, b"b") {
-        crate::process_b as *const () as u64
+        (crate::process_b as *const () as u64, Vec::new())
     } else if eq(args, b"f") {
-        crate::process_f as *const () as u64
+        (
+            crate::process_f as *const () as u64,
+            vec![Grant {
+                name: String::from("hello.txt"),
+                perms: PERM_READ,
+            }],
+        )
     } else if eq(args, b"w") {
-        crate::process_w as *const () as u64
+        (
+            crate::process_w as *const () as u64,
+            vec![Grant {
+                name: String::from("hello.txt"),
+                perms: PERM_WRITE,
+            }],
+        )
     } else {
-        console().write_str("usage: spawn <a|b>\n");
+        console().write_str("usage: spawn <a|b|f|w>\n");
         return;
     };
 
@@ -278,7 +293,7 @@ fn cmd_spawn(args: &[u8]) {
     }
 
     let pid = unsafe { scheduler::next_pid() };
-    let proc = Process::new(pid, crate::syscall::SYSCALL_MASK, 0, entry);
+    let proc = Process::new(pid, crate::syscall::SYSCALL_MASK, 0, entry, grants);
     sched.add_process(proc);
 
     console().write_str("spawned pid ");
