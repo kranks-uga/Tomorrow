@@ -36,6 +36,7 @@ const MSR_LSTAR: u32 = 0xC0000082;
 const MSR_SYSCALL_MASK: u32 = 0xC0000084;
 
 // Номера ошибок
+const EPERM: u64 = 1;
 const EFAULT: u64 = 14;
 const ENOENT: u64 = 2;
 const ESRCH: u64 = 3;
@@ -44,6 +45,7 @@ const EINVAL: u64 = 22;
 const EMFILE: u64 = 24;
 const EFBIG: u64 = 27;
 const ENAMETOOLONG: u64 = 36;
+const ENOSYS: u64 = 38;
 
 /// Предел размера fd-таблицы процесса (включая 0/1/2).
 const MAX_FDS: usize = 16;
@@ -98,6 +100,13 @@ pub fn init() {
     }
 }
 
+fn syscall_exists(nr: u64) -> bool {
+    matches!(
+        nr,
+        SYS_READ | SYS_WRITE | SYS_OPEN | SYS_CLOSE | SYS_EXIT | SYS_YIELD
+    )
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn syscall_handler(
     nr: u64,
@@ -107,8 +116,11 @@ pub unsafe extern "C" fn syscall_handler(
     _arg4: u64,
     _arg5: u64,
 ) -> u64 {
+    if !syscall_exists(nr) {
+        return err(ENOSYS);
+    }
     if !syscall_allowed(nr) {
-        return u64::MAX;
+        return err(EPERM);
     }
     match nr {
         SYS_WRITE => sys_write(arg1, arg2 as *const u8, arg3),
@@ -117,7 +129,7 @@ pub unsafe extern "C" fn syscall_handler(
         SYS_CLOSE => sys_close(arg1),
         SYS_EXIT => sys_exit(arg1),
         SYS_YIELD => sys_yield(),
-        _ => u64::MAX,
+        _ => err(ENOSYS),
     }
 }
 
@@ -200,7 +212,7 @@ unsafe fn sys_open(path_ptr: u64, path_len: u64, flags: u64) -> u64 {
     if path_len == 0 {
         return err(EINVAL);
     }
-    if path_len >= crate::ramfs::MAX_PATH as u64 {
+    if path_len > crate::ramfs::MAX_PATH as u64 {
         return err(ENAMETOOLONG);
     }
 
