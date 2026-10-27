@@ -90,10 +90,12 @@ pub fn init() {
         write_msr(MSR_LSTAR, syscall_entry as *const () as u64);
 
         // STAR: [47:32]=0x0008 — SYSCALL грузит kernel CS=0x08, SS=0x10.
-        // [63:48]=0x0010 — на SYSRET контроллер берёт user CS=base+16=0x20 (|RPL3=0x23),
-        // user SS=base+8=0x18 (|RPL3=0x1B). Раскладка GDT: 0x08 kCS, 0x10 kSS,
-        // 0x18 uSS, 0x20 uCS.
-        write_msr(MSR_STAR, 0x0010_0008_0000_0000);
+        // [63:48]=0x0013 — на SYSRET: user CS=base+16=0x23, user SS=base+8=0x1B.
+        // RPL=3 зашит в саму базу: Intel при SYSRET принудительно делает |3,
+        // а AMD берёт SS как есть — с базой 0x0010 там получался SS=0x18 (RPL 0),
+        // и первый же iretq таймера обратно в этот процесс падал в #GP(0x18).
+        // Раскладка GDT: 0x08 kCS, 0x10 kSS, 0x18 uSS, 0x20 uCS.
+        write_msr(MSR_STAR, 0x0013_0008_0000_0000);
 
         // SYSCALL_MASK — сбрасывает IF при входе
         write_msr(MSR_SYSCALL_MASK, 0x200);
