@@ -10,6 +10,10 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+/// Сколько страниц кода мапится процессу. Демо-программы — функции ядра
+/// короче 4 КБ, но могут начинаться у конца страницы → нужно две.
+const CODE_PAGES: u64 = 2;
+
 // Права rw
 pub const PERM_READ: u8 = 1 << 0;
 pub const PERM_WRITE: u8 = 1 << 1;
@@ -85,8 +89,9 @@ impl Process {
         // 0x400000 попадает в 1GB large page boot-таблицы (pml4[0]),
         // vmm не может создать 4KB внутри неё — берём pml4[4] (свободен).
         // pid-смещение — по той же причине, что и для user_stack_virt: иначе
-        // второй процесс перетрёт кодовую страницу первого.
-        let user_code_virt: u64 = 0x0000_0200_0000_0000 + pid * 0x1000;
+        // второй процесс перетрёт кодовую страницу первого. Шаг = CODE_PAGES
+        // страниц, чтобы вторая страница кода pid N не совпала с первой pid N+1.
+        let user_code_virt: u64 = 0x0000_0200_0000_0000 + pid * CODE_PAGES * PAGE_SIZE;
 
         unsafe {
             let pml4_ptr = &pml4 as *const _ as *mut crate::vmm::PageTable;
@@ -96,7 +101,16 @@ impl Process {
                 crate::vmm::PAGE_WRITABLE | crate::vmm::PAGE_USER,
             );
 
-            (*pml4_ptr).map(user_code_virt, fn_phys, PAGE_WRITABLE | PAGE_USER);
+            // Функция может начинаться у конца страницы и продолжаться на
+            // следующей — мапим CODE_PAGES подряд. Ядро лежит в физической
+            // памяти сплошным куском, поэтому следующая страница — fn_phys + 4K.
+            for i in 0..CODE_PAGES {
+                (*pml4_ptr).map(
+                    user_code_virt + i * PAGE_SIZE,
+                    fn_phys + i * PAGE_SIZE,
+                    PAGE_WRITABLE | PAGE_USER,
+                );
+            }
         }
 
         // user_stack_top теперь указывает на верхушку этой страницы
@@ -118,7 +132,7 @@ impl Process {
             user_stack: user_stack_top,
             kernel_stack_phys: stack,
             user_regions: [
-                (user_code_virt, user_code_virt + PAGE_SIZE),
+                (user_code_virt, user_code_virt + CODE_PAGES * PAGE_SIZE),
                 (user_stack_virt, user_stack_virt + PAGE_SIZE),
             ],
             user_stack_phys,

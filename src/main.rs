@@ -451,7 +451,7 @@ pub extern "C" fn process_x() -> ! {
         "mov rcx, 10",
         "16:",
         "xor edx, edx",
-        "div rcx", // rax = rax / 10, rdx = остаток
+        "div rcx",    // rax = rax / 10, rdx = остаток
         "add dl, 48", // '0' + цифра
         "dec rsi",
         "mov [rsi], dl",
@@ -477,6 +477,75 @@ pub extern "C" fn process_x() -> ! {
         "13: .ascii \"x3 \"",
         "20: .ascii \"ok \"",
         "21: .ascii \"FAIL \"",
+    )
+}
+
+#[unsafe(naked)]
+pub extern "C" fn process_r() -> ! {
+    core::arch::naked_asm!(
+        // fd = open("hello.txt", O_RDONLY) — держим файл открытым
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "xor rdx, rdx", // O_RDONLY
+        "syscall",
+        "test rax, rax",
+        "js 4f",
+        "mov r12, rax",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "lea rsi, [rip + 2f]",
+        "mov rdx, 14",
+        "syscall",
+        // Ждём `rm hello.txt` из шелла: пробуем открыть файл заново,
+        // пока open не вернёт ошибку (ENOENT).
+        "3:",
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "xor rdx, rdx",
+        "syscall",
+        "test rax, rax",
+        "js 5f",
+        "mov rdi, rax", // close(fd2), иначе EMFILE через 13 итераций
+        "mov rax, 3",
+        "syscall",
+        "jmp 3b",
+        "5:",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "lea rsi, [rip + 6f]",
+        "mov rdx, 18",
+        "syscall",
+        // Файла в каталоге нет, но inode жив, пока на него ссылается наш fd.
+        "sub rsp, 64",
+        "7:",
+        "mov rax, 0",
+        "mov rdi, r12",
+        "mov rsi, rsp",
+        "mov rdx, 16",
+        "syscall",
+        "test rax, rax",
+        "jz 8f",
+        "js 8f",
+        "mov rdx, rax",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "mov rsi, rsp",
+        "syscall",
+        "jmp 7b",
+        "8:",
+        "mov rax, 3",
+        "mov rdi, r12",
+        "syscall",
+        "4:",
+        "mov rax, 60",
+        "xor rdi, rdi",
+        "syscall",
+        "0: jmp 0b",
+        "1: .ascii \"hello.txt\"",
+        "2: .ascii \"opened, rm me\\n\"",
+        "6: .ascii \"deleted, reading:\\n\"",
     )
 }
 
