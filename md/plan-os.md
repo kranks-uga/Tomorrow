@@ -18,7 +18,7 @@ Linux-бинарей. Детальный план файловой систем�
 | PMM / VMM | готово (bitmap-страницы; map 4К в свободные PML4-слоты) |
 | Heap | free-list с рабочим dealloc; без коалесценции |
 | IDT / APIC / HPET / TSS | готово |
-| Процессы ring 3 | работают, НО: общий CR3, код = функции ядра, virt-адреса с хаком `pid*0x1000` (`process.rs:56,64`) |
+| Процессы ring 3 | работают, НО: общий CR3, код = функции ядра (2 страницы, `WRITABLE\|USER`), virt-адреса с хаком `pid * шаг` (`Process::new`) |
 | Планировщик | round-robin, 64 слота; состояний «спит/ждёт» нет |
 | Syscalls | read / write / open / close / yield / exit; ошибки `-errno` как в Linux; права на файлы через grants (см. `syscalls.md`); `syscall_mask`, `domain`, `token` в `Process` |
 | Консоль | framebuffer + PSF2; скролла нет — экран очищается целиком |
@@ -84,7 +84,7 @@ sys_open/read/write/close) → этап 4 (коалесценция и пр.).
 ## Трек D — Память: honest higher-half и per-process CR3
 
 Самый сложный трек. Делать после C, иначе exec переделывается дважды.
-Это он убивает хаки `pid*0x1000`.
+Это он убивает хаки `pid * шаг` (стек — `pid*4K`, код — `pid*CODE_PAGES*4K`).
 
 1. **D.1** Полный higher-half: всё ядро (код, стеки, куча, DMA-структуры
    xHCI) адресуется через 0xFFFF8000...; 2 МБ расширяются до нужного.

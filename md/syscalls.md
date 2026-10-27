@@ -77,8 +77,17 @@ rax = результат
 | 1 | `write` | `fd, buf, len` | `len` | `EBADF`, `EFAULT`, `EFBIG` |
 | 2 | `open` | `path_ptr, path_len, flags` | fd (≥ 3) | `EINVAL`, `ENAMETOOLONG`, `EFAULT`, `EACCES`, `ENOENT`, `EMFILE` |
 | 3 | `close` | `fd` | `0` | `EBADF` |
-| 24 | `yield` | — | `0` | — |
+| 24 | `yield` | — | `0` | — ⚠ **роняет ядро**, см. ниже |
 | 60 | `exit` | `code` (пока игнорируется) | не возвращается | — |
+
+**⚠ `yield` сломан.** Таймер и `yield_now` сохраняют контекст в `Context`
+в разных форматах: таймер — user `rip`/`rsp` (возобновление через `iretq`),
+`context_switch` — ядерные `rip`/`rsp` (возобновление через `ret`). Смешение
+приводит к прыжку на мусор в ring 0 или к `iretq` в ring 3 на адрес ядра.
+Кроме того, стек ядра для syscall'ов (`SYSCALL_KERNEL_RSP`) один на всех,
+поэтому переключаться изнутри syscall'а нельзя. Тестовые программы `yield`
+не вызывают. Починка — в треке B: свой syscall-стек у каждого процесса и
+один путь переключения.
 
 **Отличие `open` от Linux:** в Linux `open(path, flags, mode)`, где `path` —
 строка с `\0` на конце. Здесь путь передаётся парой «указатель + длина»:
@@ -172,7 +181,8 @@ write(fd) : OpenFile.perms содержит PERM_WRITE иначе EBADF
 
 - `ptr + len` считается через `checked_add` — переполнение отклоняется;
 - диапазон `[ptr, ptr + len)` должен целиком лежать **в одном** регионе
-  из `Process::user_regions` (кодовая и стековая страница процесса).
+  из `Process::user_regions`: код (`CODE_PAGES` = 2 страницы) и стек
+  (1 страница). Раскладка — в [architecture.md, раздел 2](architecture.md#2-виртуальная-память--раскладка).
 
 Проверка по флагу `PAGE_USER` в page tables не подходит: pml4 общий, и
 страницы чужих процессов тоже помечены `PAGE_USER`.
@@ -195,9 +205,22 @@ read-only (трек C), `read` в кодовую страницу приведё
 | `spawn f` | `hello.txt`: READ | `open(O_RDONLY)` → `read` по 16 байт → вывод → `close` |
 | `spawn w` | `hello.txt`: WRITE | `open(O_WRONLY)` → две записи: перезапись, сдвиг `offset`, рост файла |
 | `spawn x` | `hello.txt`: READ | запреты: `x1` — `open(O_WRONLY)`, `x2` — `write` в fd `O_RDONLY`, `x3` — `open` файла без grant |
+| `spawn r` | `hello.txt`: READ | удаление открытого файла: данные доступны через fd после `rm` |
 
 После `spawn w` файл `hello.txt` содержит `XYZ0123456789abcdefghij`
 (23 байта вместо 18).
+
+`spawn r` открывает `hello.txt` и ждёт, повторяя `open`/`close`, пока
+повторный `open` не вернёт `ENOENT` (файл удалили). Затем читает через
+первый fd. Сценарий:
+
+    > spawn r
+    opened, rm me
+    > rm hello.txt
+    file deleted
+    deleted, reading:
+    hello from initrd          ← данные живы: fd держит Arc<Inode>
+    > ls                       ← hello.txt в каталоге уже нет
 
 `spawn x` для каждого запрета печатает вердикт и полученный код. Ожидаемый
 вывод:

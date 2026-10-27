@@ -66,14 +66,31 @@ start64_high (higher half)
                        │
        ...             │  non-canonical hole
                        │
-0x0000_0200_0001_0000 ─┤
-0x0000_0200_0000_0000 ─┤  ← user code (маппится физ. страница process_a)
+0x0000_0200_0000_0000 ─┤  ← user code: pid * 8KB, по 2 страницы на процесс
+                       │     (физ. страницы функции ядра process_*)
                        │
-0x0000_0100_0001_0000 ─┤
-0x0000_0100_0000_0000 ─┤  ← user stack (4KB, PAGE_USER)
+0x0000_0100_0000_0000 ─┤  ← user stack: pid * 4KB, по 1 странице (PAGE_USER)
                        │
 0x0000_0000_0000_0000  ┘
 ```
+
+Все процессы делят один pml4, поэтому user-адреса разводятся по pid:
+
+| Регион | Адрес процесса | Размер |
+|---|---|---|
+| код | `0x0200_0000_0000 + pid * CODE_PAGES * 4K` | `CODE_PAGES` = 2 страницы |
+| стек | `0x0100_0000_0000 + pid * 4K` | 1 страница |
+
+Код мапится **двумя** страницами: функция-программа короче 4 КБ, но может
+начинаться у конца физической страницы и продолжаться на следующей (с одной
+страницей это давало `#PF` с `err=0x14` — выборка инструкции из незамапленной
+страницы). Шаг по pid равен размеру региона, иначе вторая страница кода
+pid N совпала бы с первой pid N+1.
+
+Это временная схема (хак `pid * шаг`): она уходит в треках C/D, когда
+программы станут ELF-файлами в своих страницах и у процессов появится
+свой CR3. Кодовые страницы — это страницы **ядра**, замапленные как
+`WRITABLE | USER`: процесс может читать и менять соседний код ядра.
 
 Физический адрес ↔ виртуальный:
 - kernel: `virt = phys + 0xFFFF_8000_0000_0000`
@@ -301,20 +318,23 @@ Process {
 0xA8  kernel_stack
 ```
 
-### Process::new(pid, syscall_mask, domain, entry)
+### Process::new(pid, syscall_mask, domain, entry, grants)
 
 ```
 1. pmm::alloc() → kernel_stack страница (физ.)
 2. pmm::alloc() → user_stack страница (физ.)
-3. Маппим user_stack по вирт. 0x0000_0100_0000_0000 с PAGE_USER
-4. Вычисляем fn_phys = (entry - KERNEL_VIRT) & !0xFFF
-5. Маппим fn_phys по вирт. 0x0000_0200_0000_0000 с PAGE_USER
-6. Context.rip    = 0x0200_0000_0000 + (entry & 0xFFF)
-7. Context.rsp    = user_stack_top (0x0100_0001_0000)
-8. Context.rflags = 0x202  (IF=1)
-9. Context.cs     = 0x23   (user code, DPL=3)
-10. Context.ss    = 0x1B   (user data, DPL=3)
-11. Context.cr3   = текущий CR3
+3. user_stack_virt = 0x0100_0000_0000 + pid * 4K, маппим с PAGE_USER
+4. fn_phys = (entry - KERNEL_VIRT) & !0xFFF
+5. user_code_virt = 0x0200_0000_0000 + pid * CODE_PAGES * 4K;
+   маппим CODE_PAGES страниц подряд: fn_phys + i*4K → user_code_virt + i*4K
+6. user_regions = [код: CODE_PAGES страниц, стек: 1 страница]
+7. Context.rip    = user_code_virt + (entry & 0xFFF)
+8. Context.rsp    = user_stack_virt + 4K
+9. Context.rflags = 0x202  (IF=1)
+10. Context.cs    = 0x23   (user code, DPL=3)
+11. Context.ss    = 0x1B   (user data, DPL=3)
+12. Context.cr3   = текущий CR3
+13. fds = [None; 3] (0/1/2 — консоль), grants — из аргумента
 ```
 
 ---
