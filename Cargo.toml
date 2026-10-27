@@ -17,3 +17,8 @@ panic = "abort"
 
 [build-dependencies]
 cc = "1.0"
+
+[[bin]]
+name = "tomorrow"
+test = false
+bench = false

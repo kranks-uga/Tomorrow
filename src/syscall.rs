@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use crate::{
     pmm,
-    process::{OpenFile, Process},
+    process::{OpenFile, Process, PERM_READ, PERM_WRITE},
     scheduler,
 };
-use core::cmp::min;
 
 // Linux x86-64 syscall numbers
 pub const SYS_READ: u64 = 0;
@@ -13,6 +12,12 @@ pub const SYS_OPEN: u64 = 2;
 pub const SYS_CLOSE: u64 = 3;
 pub const SYS_EXIT: u64 = 60;
 pub const SYS_YIELD: u64 = 24;
+
+const O_RDONLY: u64 = 0;
+const O_WRONLY: u64 = 1;
+const O_RDWR: u64 = 2;
+const O_ACCMODE: u64 = 3; // маска двух младших бит
+const EACCES: u64 = 13;
 
 pub const SYSCALL_MASK: u64 = (1 << SYS_READ)
     | (1 << SYS_WRITE)
@@ -31,13 +36,16 @@ const MSR_LSTAR: u32 = 0xC0000082;
 const MSR_SYSCALL_MASK: u32 = 0xC0000084;
 
 // Номера ошибок
+const EPERM: u64 = 1;
 const EFAULT: u64 = 14;
 const ENOENT: u64 = 2;
 const ESRCH: u64 = 3;
 const EBADF: u64 = 9;
 const EINVAL: u64 = 22;
 const EMFILE: u64 = 24;
+const EFBIG: u64 = 27;
 const ENAMETOOLONG: u64 = 36;
+const ENOSYS: u64 = 38;
 
 /// Предел размера fd-таблицы процесса (включая 0/1/2).
 const MAX_FDS: usize = 16;
@@ -82,14 +90,23 @@ pub fn init() {
         write_msr(MSR_LSTAR, syscall_entry as *const () as u64);
 
         // STAR: [47:32]=0x0008 — SYSCALL грузит kernel CS=0x08, SS=0x10.
-        // [63:48]=0x0010 — на SYSRET контроллер берёт user CS=base+16=0x20 (|RPL3=0x23),
-        // user SS=base+8=0x18 (|RPL3=0x1B). Раскладка GDT: 0x08 kCS, 0x10 kSS,
-        // 0x18 uSS, 0x20 uCS.
-        write_msr(MSR_STAR, 0x0010_0008_0000_0000);
+        // [63:48]=0x0013 — на SYSRET: user CS=base+16=0x23, user SS=base+8=0x1B.
+        // RPL=3 зашит в саму базу: Intel при SYSRET принудительно делает |3,
+        // а AMD берёт SS как есть — с базой 0x0010 там получался SS=0x18 (RPL 0),
+        // и первый же iretq таймера обратно в этот процесс падал в #GP(0x18).
+        // Раскладка GDT: 0x08 kCS, 0x10 kSS, 0x18 uSS, 0x20 uCS.
+        write_msr(MSR_STAR, 0x0013_0008_0000_0000);
 
         // SYSCALL_MASK — сбрасывает IF при входе
         write_msr(MSR_SYSCALL_MASK, 0x200);
     }
+}
+
+fn syscall_exists(nr: u64) -> bool {
+    matches!(
+        nr,
+        SYS_READ | SYS_WRITE | SYS_OPEN | SYS_CLOSE | SYS_EXIT | SYS_YIELD
+    )
 }
 
 #[no_mangle]
@@ -101,17 +118,20 @@ pub unsafe extern "C" fn syscall_handler(
     _arg4: u64,
     _arg5: u64,
 ) -> u64 {
+    if !syscall_exists(nr) {
+        return err(ENOSYS);
+    }
     if !syscall_allowed(nr) {
-        return u64::MAX;
+        return err(EPERM);
     }
     match nr {
         SYS_WRITE => sys_write(arg1, arg2 as *const u8, arg3),
         SYS_READ => sys_read(arg1, arg2, arg3),
-        SYS_OPEN => sys_open(arg1, arg2),
+        SYS_OPEN => sys_open(arg1, arg2, arg3),
         SYS_CLOSE => sys_close(arg1),
         SYS_EXIT => sys_exit(arg1),
         SYS_YIELD => sys_yield(),
-        _ => u64::MAX,
+        _ => err(ENOSYS),
     }
 }
 
@@ -139,28 +159,62 @@ unsafe fn syscall_allowed(nr: u64) -> bool {
 }
 
 unsafe fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
-    if fd == 1 {
-        // Вывод идёт через шелл, а не напрямую в консоль: иначе он вклинивается
-        // в набираемую строку ввода (см. shell::program_output).
-        let slice = core::slice::from_raw_parts(buf, len as usize);
-        crate::shell::program_output(slice);
+    let fd = fd as usize;
+    let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() else {
+        return err(ESRCH);
+    };
+    if fd >= p.fds.len() {
+        return err(EBADF);
+    }
+
+    if !user_range_ok(p, buf as u64, len) {
+        return err(EFAULT);
+    }
+    let src = core::slice::from_raw_parts(buf, len as usize);
+
+    // stdout/stderr. Вывод идёт через шелл, а не напрямую в консоль: иначе он
+    // вклинивается в набираемую строку ввода (см. shell::program_output).
+    if fd == 1 || fd == 2 {
+        crate::shell::program_output(src);
         return len;
     }
-    u64::MAX
+
+    let Some(f) = p.fds[fd].as_mut() else {
+        return err(EBADF);
+    };
+    if f.perms & PERM_WRITE == 0 {
+        return err(EBADF);
+    }
+
+    let Some(end) = f.inode.write_at(f.offset, src) else {
+        return err(EFBIG);
+    };
+    f.offset = end;
+    len
 }
 
 fn err(e: u64) -> u64 {
     (-(e as i64)) as u64
 }
 
-unsafe fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
+unsafe fn sys_open(path_ptr: u64, path_len: u64, flags: u64) -> u64 {
     let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() else {
         return err(ESRCH);
+    };
+    // O_CREAT и прочие биты пока не поддерживаем — лучше явно отказать, чем молча игнорировать.
+    if flags & !O_ACCMODE != 0 {
+        return err(EINVAL);
+    }
+    let need: u8 = match flags & O_ACCMODE {
+        O_RDONLY => PERM_READ,
+        O_WRONLY => PERM_WRITE,
+        O_RDWR => PERM_READ | PERM_WRITE,
+        _ => return err(EINVAL),
     };
     if path_len == 0 {
         return err(EINVAL);
     }
-    if path_len >= crate::ramfs::MAX_PATH as u64 {
+    if path_len > crate::ramfs::MAX_PATH as u64 {
         return err(ENAMETOOLONG);
     }
 
@@ -173,10 +227,26 @@ unsafe fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
     name_buf[..src.len()].copy_from_slice(src);
     let name = &name_buf[..src.len()];
 
+    // Grant проверяется ДО lookup: иначе по ENOENT/EACCES процесс без прав
+    // мог бы узнать, какие файлы существуют. Берём perms (u8, Copy), а не &Grant,
+    // чтобы не держать заимствование p.grants при push в p.fds.
+    let granted = p
+        .grants
+        .iter()
+        .find(|g| g.name.as_bytes() == name)
+        .map_or(0, |g| g.perms);
+    if granted & need != need {
+        return err(EACCES);
+    }
+
     let Some(inode) = crate::ramfs::lookup(name) else {
         return err(ENOENT);
     };
-    let file = OpenFile { inode, offset: 0 };
+    let file = OpenFile {
+        inode,
+        offset: 0,
+        perms: need,
+    };
 
     // Первый свободный слот начиная с 3, иначе — растим таблицу до MAX_FDS.
     if let Some(fd) = (FIRST_FILE_FD..p.fds.len()).find(|&i| p.fds[i].is_none()) {
@@ -206,16 +276,12 @@ unsafe fn sys_read(fd: u64, buf: u64, len: u64) -> u64 {
     let Some(f) = p.fds[fd].as_mut() else {
         return err(EBADF);
     };
-
-    let data = f.inode.data.lock();
-    if f.offset >= data.len() {
-        return 0;
+    if f.perms & PERM_READ == 0 {
+        return err(EBADF);
     }
-    let left = data.len() - f.offset;
-    let n = min(len as usize, left);
-    let dst = core::slice::from_raw_parts_mut(buf as *mut u8, n);
-    let src = &data[f.offset..f.offset + n];
-    dst.copy_from_slice(src);
+
+    let dst = core::slice::from_raw_parts_mut(buf as *mut u8, len as usize);
+    let n = f.inode.read_at(f.offset, dst);
     f.offset += n;
     n as u64
 }

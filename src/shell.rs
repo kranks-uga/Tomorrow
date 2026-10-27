@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use crate::console::Console;
-use crate::process::{Process, ProcessState};
+use crate::process::{Grant, Process, ProcessState, PERM_READ, PERM_WRITE};
 use crate::{pmm, scheduler, CONSOLE, TICKS};
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
 const PROMPT: &str = "User@Tomorrow> ";
 const PROMPT_LEN: usize = PROMPT.len();
@@ -165,7 +168,7 @@ fn cmd_help() {
          \x20 echo <text>   print text\n\
          \x20 ticks         show timer tick count\n\
          \x20 ps            list processes\n\
-         \x20 spawn <a|b|f>   create a new demo process (a or b or f)\n\
+         \x20 spawn <a|b|f|w|x|r> create a new demo process (a, b, f, w, x or r)\n\
          \x20 kill <pid>    terminate a process by pid\n\
          \x20 mem           show free physical memory\n\
          \x20 reboot        restart the machine\n\
@@ -255,14 +258,44 @@ fn cmd_ps() {
 
 fn cmd_spawn(args: &[u8]) {
     // Выбираем демо-код по имени процесса.
-    let entry = if eq(args, b"a") {
-        crate::process_a as *const () as u64
+    let (entry, grants) = if eq(args, b"a") {
+        (crate::process_a as *const () as u64, Vec::new())
     } else if eq(args, b"b") {
-        crate::process_b as *const () as u64
+        (crate::process_b as *const () as u64, Vec::new())
     } else if eq(args, b"f") {
-        crate::process_f as *const () as u64
+        (
+            crate::process_f as *const () as u64,
+            vec![Grant {
+                name: String::from("hello.txt"),
+                perms: PERM_READ,
+            }],
+        )
+    } else if eq(args, b"w") {
+        (
+            crate::process_w as *const () as u64,
+            vec![Grant {
+                name: String::from("hello.txt"),
+                perms: PERM_WRITE,
+            }],
+        )
+    } else if eq(args, b"x") {
+        (
+            crate::process_x as *const () as u64,
+            vec![Grant {
+                name: String::from("hello.txt"),
+                perms: PERM_READ,
+            }],
+        )
+    } else if eq(args, b"r") {
+        (
+            crate::process_r as *const () as u64,
+            vec![Grant {
+                name: String::from("hello.txt"),
+                perms: PERM_READ,
+            }],
+        )
     } else {
-        console().write_str("usage: spawn <a|b>\n");
+        console().write_str("usage: spawn <a|b|f|w|x|r>\n");
         return;
     };
 
@@ -275,7 +308,7 @@ fn cmd_spawn(args: &[u8]) {
     }
 
     let pid = unsafe { scheduler::next_pid() };
-    let proc = Process::new(pid, crate::syscall::SYSCALL_MASK, 0, entry);
+    let proc = Process::new(pid, crate::syscall::SYSCALL_MASK, 0, entry, grants);
     sched.add_process(proc);
 
     console().write_str("spawned pid ");

@@ -7,6 +7,7 @@
 extern crate alloc;
 
 use crate::console::Console;
+use alloc::vec::Vec;
 use core::ptr::{addr_of, read_unaligned};
 
 mod boot;
@@ -299,6 +300,7 @@ pub extern "C" fn process_f() -> ! {
         "mov rax, 2",
         "lea rdi, [rip + 1f]",
         "mov rsi, 9",
+        "xor rdx, rdx", // O_RDONLY
         "syscall",
         "mov r12, rax",
         "sub rsp, 64",
@@ -326,6 +328,224 @@ pub extern "C" fn process_f() -> ! {
         "syscall",
         "0: jmp 0b",
         "1: .ascii \"hello.txt\"",
+    )
+}
+
+#[unsafe(naked)]
+pub extern "C" fn process_w() -> ! {
+    core::arch::naked_asm!(
+        // fd = open("hello.txt", 9, O_WRONLY)
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 1", // O_WRONLY
+        "syscall",
+        "mov r12, rax",
+        // write(fd, "XYZ", 3): перезапись первых 3 байт
+        "mov rax, 1",
+        "mov rdi, r12",
+        "lea rsi, [rip + 2f]",
+        "mov rdx, 3",
+        "syscall",
+        // write(fd, "0123456789abcdefghij", 20): с offset 3 до 23 > 18, файл растёт
+        "mov rax, 1",
+        "mov rdi, r12",
+        "lea rsi, [rip + 5f]",
+        "mov rdx, 20",
+        "syscall",
+        // close(fd); exit(0)
+        "mov rax, 3",
+        "mov rdi, r12",
+        "syscall",
+        "mov rax, 60",
+        "xor rdi, rdi",
+        "syscall",
+        "0: jmp 0b",
+        "1: .ascii \"hello.txt\"",
+        "2: .ascii \"XYZ\"",
+        "5: .ascii \"0123456789abcdefghij\"",
+    )
+}
+
+#[unsafe(naked)]
+pub extern "C" fn process_x() -> ! {
+    core::arch::naked_asm!(
+        // Каждый тест печатает "xN ok -E" если syscall вернул ошибку -E, иначе "xN FAIL N".
+
+        // 1. open("hello.txt", O_WRONLY)
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 1", // O_WRONLY
+        "syscall",
+        "lea r13, [rip + 11f]",
+        "call 9f",
+        // 2. fd = open("hello.txt", O_RDONLY)
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "xor rdx, rdx", // O_RDONLY
+        "syscall",
+        "mov r12, rax",
+        "test rax, rax",
+        "js 5f", // open сам упал — write не делаем, тест провален
+        "mov rax, 1",
+        "mov rdi, r12",
+        "lea rsi, [rip + 3f]",
+        "mov rdx, 3",
+        "syscall",
+        "jmp 6f",
+        "5:",
+        "xor eax, eax", // rax >= 0 → report напишет FAIL
+        "6:",
+        "lea r13, [rip + 12f]",
+        "call 9f",
+        "mov rax, 3", // close(fd); на отрицательном fd просто вернёт EBADF
+        "mov rdi, r12",
+        "syscall",
+        // 3. open("readme.txt", O_RDONLY)
+        "mov rax, 2",
+        "lea rdi, [rip + 2f]",
+        "mov rsi, 10",
+        "xor rdx, rdx", // O_RDONLY
+        "syscall",
+        "lea r13, [rip + 13f]",
+        "call 9f",
+        // exit(0)
+        "mov rax, 60",
+        "xor rdi, rdi",
+        "syscall",
+        "0: jmp 0b",
+        // report: rax = результат syscall, r13 = префикс "xN " (3 байта).
+        // Ожидаем ошибку, т.е. rax < 0.
+        "9:",
+        "mov r14, rax",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "mov rsi, r13",
+        "mov rdx, 3",
+        "syscall",
+        "test r14, r14",
+        "js 7f",
+        "lea rsi, [rip + 21f]",
+        "mov rdx, 5",
+        "jmp 8f",
+        "7:",
+        "lea rsi, [rip + 20f]",
+        "mov rdx, 3",
+        "8:",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "syscall",
+        // Печатаем сам результат (r14) знаковым десятичным + '\n'.
+        // Буфер на стеке заполняется с конца: цифры идут от младшей.
+        "sub rsp, 32",
+        "lea rsi, [rsp + 32]",
+        "dec rsi",
+        "mov byte ptr [rsi], 10", // '\n'
+        "mov rax, r14",
+        "test rax, rax",
+        "jns 15f",
+        "neg rax",
+        "15:",
+        "mov rcx, 10",
+        "16:",
+        "xor edx, edx",
+        "div rcx",    // rax = rax / 10, rdx = остаток
+        "add dl, 48", // '0' + цифра
+        "dec rsi",
+        "mov [rsi], dl",
+        "test rax, rax",
+        "jnz 16b",
+        "test r14, r14",
+        "jns 17f",
+        "dec rsi",
+        "mov byte ptr [rsi], 45", // '-'
+        "17:",
+        "lea rdx, [rsp + 32]",
+        "sub rdx, rsi", // длина = конец буфера - начало числа
+        "mov rax, 1",
+        "mov rdi, 1",
+        "syscall",
+        "add rsp, 32",
+        "ret",
+        "1: .ascii \"hello.txt\"",
+        "2: .ascii \"readme.txt\"",
+        "3: .ascii \"XYZ\"",
+        "11: .ascii \"x1 \"",
+        "12: .ascii \"x2 \"",
+        "13: .ascii \"x3 \"",
+        "20: .ascii \"ok \"",
+        "21: .ascii \"FAIL \"",
+    )
+}
+
+#[unsafe(naked)]
+pub extern "C" fn process_r() -> ! {
+    core::arch::naked_asm!(
+        // fd = open("hello.txt", O_RDONLY) — держим файл открытым
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "xor rdx, rdx", // O_RDONLY
+        "syscall",
+        "test rax, rax",
+        "js 4f",
+        "mov r12, rax",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "lea rsi, [rip + 2f]",
+        "mov rdx, 14",
+        "syscall",
+        // Ждём `rm hello.txt` из шелла: пробуем открыть файл заново,
+        // пока open не вернёт ошибку (ENOENT).
+        "3:",
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "xor rdx, rdx",
+        "syscall",
+        "test rax, rax",
+        "js 5f",
+        "mov rdi, rax", // close(fd2), иначе EMFILE через 13 итераций
+        "mov rax, 3",
+        "syscall",
+        "jmp 3b",
+        "5:",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "lea rsi, [rip + 6f]",
+        "mov rdx, 18",
+        "syscall",
+        // Файла в каталоге нет, но inode жив, пока на него ссылается наш fd.
+        "sub rsp, 64",
+        "7:",
+        "mov rax, 0",
+        "mov rdi, r12",
+        "mov rsi, rsp",
+        "mov rdx, 16",
+        "syscall",
+        "test rax, rax",
+        "jz 8f",
+        "js 8f",
+        "mov rdx, rax",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "mov rsi, rsp",
+        "syscall",
+        "jmp 7b",
+        "8:",
+        "mov rax, 3",
+        "mov rdi, r12",
+        "syscall",
+        "4:",
+        "mov rax, 60",
+        "xor rdi, rdi",
+        "syscall",
+        "0: jmp 0b",
+        "1: .ascii \"hello.txt\"",
+        "2: .ascii \"opened, rm me\\n\"",
+        "6: .ascii \"deleted, reading:\\n\"",
     )
 }
 
@@ -546,18 +766,14 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             crate::syscall::SYSCALL_MASK,
             0,
             process_a as *const () as u64,
+            Vec::new(),
         );
         let proc_b = process::Process::new(
             2,
             crate::syscall::SYSCALL_MASK,
             0,
             process_b as *const () as u64,
-        );
-        let proc_f = process::Process::new(
-            3,
-            crate::syscall::SYSCALL_MASK,
-            0,
-            process_f as *const () as u64,
+            Vec::new(),
         );
         (&raw mut scheduler::SCHEDULER)
             .as_mut()
