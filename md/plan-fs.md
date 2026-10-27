@@ -132,6 +132,10 @@ pub fds: Vec<Option<OpenFile>>,   // индекс = fd
 Ошибки — в стиле существующего диспетчера (`u64::MAX`, `MAX-1`, ...
 или отрицательные как в Linux; выбрать одну конвенцию и записать в md/).
 
+**Решено:** `-errno` как в Linux; сигнатура стала
+`open(path_ptr, path_len, flags)` с проверкой grants. Таблица errno,
+флаги и модель прав — в [syscalls.md](syscalls.md).
+
 ### 3.3 `sys_read` / `sys_write` по fd
 
 - `sys_read(fd, buf, len)`: скопировать из `inode.data` начиная с `offset`,

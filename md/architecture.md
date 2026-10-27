@@ -410,10 +410,12 @@ syscall_entry:
 |-------|----------|-----------|
 | 0 | SYS_READ | fd, buf, len |
 | 1 | SYS_WRITE | fd, buf, len |
-| 2 | SYS_OPEN | — |
-| 3 | SYS_CLOSE | — |
+| 2 | SYS_OPEN | path_ptr, path_len, flags |
+| 3 | SYS_CLOSE | fd |
 | 24 | SYS_YIELD | — |
 | 60 | SYS_EXIT | code |
+
+Возвраты, errno, флаги `open` и модель прав на файлы — в [syscalls.md](syscalls.md).
 
 ---
 

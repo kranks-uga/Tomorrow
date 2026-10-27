@@ -20,7 +20,7 @@ Linux-бинарей. Детальный план файловой систем�
 | IDT / APIC / HPET / TSS | готово |
 | Процессы ring 3 | работают, НО: общий CR3, код = функции ядра, virt-адреса с хаком `pid*0x1000` (`process.rs:56,64`) |
 | Планировщик | round-robin, 64 слота; состояний «спит/ждёт» нет |
-| Syscalls | write / exit / yield (`syscall.rs:77`); есть зачаток модели безопасности: `syscall_mask`, `domain`, `token` в `Process` |
+| Syscalls | read / write / open / close / yield / exit; ошибки `-errno` как в Linux; права на файлы через grants (см. `syscalls.md`); `syscall_mask`, `domain`, `token` в `Process` |
 | Консоль | framebuffer + PSF2; скролла нет — экран очищается целиком |
 | Шелл | команды, line discipline (program_output) |
 | USB / xHCI | работает на железе: хабы + TT, boot-клавиатура |
