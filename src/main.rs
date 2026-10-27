@@ -370,7 +370,7 @@ pub extern "C" fn process_w() -> ! {
 #[unsafe(naked)]
 pub extern "C" fn process_x() -> ! {
     core::arch::naked_asm!(
-        // Каждый тест печатает "xN ok" если syscall вернул ошибку, иначе "xN FAIL".
+        // Каждый тест печатает "xN ok -E" если syscall вернул ошибку -E, иначе "xN FAIL N".
 
         // 1. open("hello.txt", O_WRONLY)
         "mov rax, 2",
@@ -437,6 +437,37 @@ pub extern "C" fn process_x() -> ! {
         "mov rax, 1",
         "mov rdi, 1",
         "syscall",
+        // Печатаем сам результат (r14) знаковым десятичным + '\n'.
+        // Буфер на стеке заполняется с конца: цифры идут от младшей.
+        "sub rsp, 32",
+        "lea rsi, [rsp + 32]",
+        "dec rsi",
+        "mov byte ptr [rsi], 10", // '\n'
+        "mov rax, r14",
+        "test rax, rax",
+        "jns 15f",
+        "neg rax",
+        "15:",
+        "mov rcx, 10",
+        "16:",
+        "xor edx, edx",
+        "div rcx", // rax = rax / 10, rdx = остаток
+        "add dl, 48", // '0' + цифра
+        "dec rsi",
+        "mov [rsi], dl",
+        "test rax, rax",
+        "jnz 16b",
+        "test r14, r14",
+        "jns 17f",
+        "dec rsi",
+        "mov byte ptr [rsi], 45", // '-'
+        "17:",
+        "lea rdx, [rsp + 32]",
+        "sub rdx, rsi", // длина = конец буфера - начало числа
+        "mov rax, 1",
+        "mov rdi, 1",
+        "syscall",
+        "add rsp, 32",
         "ret",
         "1: .ascii \"hello.txt\"",
         "2: .ascii \"readme.txt\"",
@@ -444,8 +475,8 @@ pub extern "C" fn process_x() -> ! {
         "11: .ascii \"x1 \"",
         "12: .ascii \"x2 \"",
         "13: .ascii \"x3 \"",
-        "20: .ascii \"ok\\n\"",
-        "21: .ascii \"FAIL\\n\"",
+        "20: .ascii \"ok \"",
+        "21: .ascii \"FAIL \"",
     )
 }
 
