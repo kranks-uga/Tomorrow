@@ -300,6 +300,7 @@ pub extern "C" fn process_f() -> ! {
         "mov rax, 2",
         "lea rdi, [rip + 1f]",
         "mov rsi, 9",
+        "xor rdx, rdx", // O_RDONLY
         "syscall",
         "mov r12, rax",
         "sub rsp, 64",
@@ -333,10 +334,11 @@ pub extern "C" fn process_f() -> ! {
 #[unsafe(naked)]
 pub extern "C" fn process_w() -> ! {
     core::arch::naked_asm!(
-        // fd = open("hello.txt", 9)
+        // fd = open("hello.txt", 9, O_WRONLY)
         "mov rax, 2",
         "lea rdi, [rip + 1f]",
         "mov rsi, 9",
+        "mov rdx, 1", // O_WRONLY
         "syscall",
         "mov r12, rax",
         // write(fd, "XYZ", 3): перезапись первых 3 байт
@@ -362,6 +364,88 @@ pub extern "C" fn process_w() -> ! {
         "1: .ascii \"hello.txt\"",
         "2: .ascii \"XYZ\"",
         "5: .ascii \"0123456789abcdefghij\"",
+    )
+}
+
+#[unsafe(naked)]
+pub extern "C" fn process_x() -> ! {
+    core::arch::naked_asm!(
+        // Каждый тест печатает "xN ok" если syscall вернул ошибку, иначе "xN FAIL".
+
+        // 1. open("hello.txt", O_WRONLY)
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 1", // O_WRONLY
+        "syscall",
+        "lea r13, [rip + 11f]",
+        "call 9f",
+        // 2. fd = open("hello.txt", O_RDONLY)
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "xor rdx, rdx", // O_RDONLY
+        "syscall",
+        "mov r12, rax",
+        "test rax, rax",
+        "js 5f", // open сам упал — write не делаем, тест провален
+        "mov rax, 1",
+        "mov rdi, r12",
+        "lea rsi, [rip + 3f]",
+        "mov rdx, 3",
+        "syscall",
+        "jmp 6f",
+        "5:",
+        "xor eax, eax", // rax >= 0 → report напишет FAIL
+        "6:",
+        "lea r13, [rip + 12f]",
+        "call 9f",
+        "mov rax, 3", // close(fd); на отрицательном fd просто вернёт EBADF
+        "mov rdi, r12",
+        "syscall",
+        // 3. open("readme.txt", O_RDONLY)
+        "mov rax, 2",
+        "lea rdi, [rip + 2f]",
+        "mov rsi, 10",
+        "xor rdx, rdx", // O_RDONLY
+        "syscall",
+        "lea r13, [rip + 13f]",
+        "call 9f",
+        // exit(0)
+        "mov rax, 60",
+        "xor rdi, rdi",
+        "syscall",
+        "0: jmp 0b",
+        // report: rax = результат syscall, r13 = префикс "xN " (3 байта).
+        // Ожидаем ошибку, т.е. rax < 0.
+        "9:",
+        "mov r14, rax",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "mov rsi, r13",
+        "mov rdx, 3",
+        "syscall",
+        "test r14, r14",
+        "js 7f",
+        "lea rsi, [rip + 21f]",
+        "mov rdx, 5",
+        "jmp 8f",
+        "7:",
+        "lea rsi, [rip + 20f]",
+        "mov rdx, 3",
+        "8:",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "syscall",
+        "ret",
+        "1: .ascii \"hello.txt\"",
+        "2: .ascii \"readme.txt\"",
+        "3: .ascii \"XYZ\"",
+        "11: .ascii \"x1 \"",
+        "12: .ascii \"x2 \"",
+        "13: .ascii \"x3 \"",
+        "20: .ascii \"ok\\n\"",
+        "21: .ascii \"FAIL\\n\"",
     )
 }
 

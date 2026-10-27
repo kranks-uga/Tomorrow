@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use crate::console::Console;
 use crate::process::{Grant, Process, ProcessState, PERM_READ, PERM_WRITE};
-use crate::ramfs::create;
 use crate::{pmm, scheduler, CONSOLE, TICKS};
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 
 const PROMPT: &str = "User@Tomorrow> ";
 const PROMPT_LEN: usize = PROMPT.len();
@@ -169,7 +168,7 @@ fn cmd_help() {
          \x20 echo <text>   print text\n\
          \x20 ticks         show timer tick count\n\
          \x20 ps            list processes\n\
-         \x20 spawn <a|b|f|w>   create a new demo process (a or b or f or w)\n\
+         \x20 spawn <a|b|f|w|x> create a new demo process (a, b, f, w or x)\n\
          \x20 kill <pid>    terminate a process by pid\n\
          \x20 mem           show free physical memory\n\
          \x20 reboot        restart the machine\n\
@@ -279,8 +278,16 @@ fn cmd_spawn(args: &[u8]) {
                 perms: PERM_WRITE,
             }],
         )
+    } else if eq(args, b"x") {
+        (
+            crate::process_x as *const () as u64,
+            vec![Grant {
+                name: String::from("hello.txt"),
+                perms: PERM_READ,
+            }],
+        )
     } else {
-        console().write_str("usage: spawn <a|b|f|w>\n");
+        console().write_str("usage: spawn <a|b|f|w|x>\n");
         return;
     };
 

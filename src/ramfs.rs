@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use crate::shell::parse_octal;
 use alloc::{string::String, sync::Arc, vec::Vec};
+use core::cmp::min;
 use spin::Mutex;
 
 pub const MAX_PATH: usize = 100;
@@ -29,6 +30,18 @@ impl Inode {
         }
         data[offset..end].copy_from_slice(src);
         Some(end)
+    }
+
+    /// Прочитать в `dst` начиная с `offset`. Возвращает число прочитанных байт:
+    /// меньше `dst.len()` у конца файла, 0 — если `offset` за концом.
+    pub fn read_at(&self, offset: usize, dst: &mut [u8]) -> usize {
+        let data = self.data.lock();
+        if offset >= data.len() {
+            return 0;
+        }
+        let n = min(dst.len(), data.len() - offset);
+        dst[..n].copy_from_slice(&data[offset..offset + n]);
+        n
     }
 }
 

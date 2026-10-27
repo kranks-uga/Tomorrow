@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use crate::{
     pmm,
-    process::{OpenFile, Process},
+    process::{OpenFile, Process, PERM_READ, PERM_WRITE},
     scheduler,
 };
-use core::cmp::min;
 
 // Linux x86-64 syscall numbers
 pub const SYS_READ: u64 = 0;
@@ -13,6 +12,12 @@ pub const SYS_OPEN: u64 = 2;
 pub const SYS_CLOSE: u64 = 3;
 pub const SYS_EXIT: u64 = 60;
 pub const SYS_YIELD: u64 = 24;
+
+const O_RDONLY: u64 = 0;
+const O_WRONLY: u64 = 1;
+const O_RDWR: u64 = 2;
+const O_ACCMODE: u64 = 3; // маска двух младших бит
+const EACCES: u64 = 13;
 
 pub const SYSCALL_MASK: u64 = (1 << SYS_READ)
     | (1 << SYS_WRITE)
@@ -108,7 +113,7 @@ pub unsafe extern "C" fn syscall_handler(
     match nr {
         SYS_WRITE => sys_write(arg1, arg2 as *const u8, arg3),
         SYS_READ => sys_read(arg1, arg2, arg3),
-        SYS_OPEN => sys_open(arg1, arg2),
+        SYS_OPEN => sys_open(arg1, arg2, arg3),
         SYS_CLOSE => sys_close(arg1),
         SYS_EXIT => sys_exit(arg1),
         SYS_YIELD => sys_yield(),
@@ -163,6 +168,9 @@ unsafe fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
     let Some(f) = p.fds[fd].as_mut() else {
         return err(EBADF);
     };
+    if f.perms & PERM_WRITE == 0 {
+        return err(EBADF);
+    }
 
     let Some(end) = f.inode.write_at(f.offset, src) else {
         return err(EFBIG);
@@ -175,9 +183,19 @@ fn err(e: u64) -> u64 {
     (-(e as i64)) as u64
 }
 
-unsafe fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
+unsafe fn sys_open(path_ptr: u64, path_len: u64, flags: u64) -> u64 {
     let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() else {
         return err(ESRCH);
+    };
+    // O_CREAT и прочие биты пока не поддерживаем — лучше явно отказать, чем молча игнорировать.
+    if flags & !O_ACCMODE != 0 {
+        return err(EINVAL);
+    }
+    let need: u8 = match flags & O_ACCMODE {
+        O_RDONLY => PERM_READ,
+        O_WRONLY => PERM_WRITE,
+        O_RDWR => PERM_READ | PERM_WRITE,
+        _ => return err(EINVAL),
     };
     if path_len == 0 {
         return err(EINVAL);
@@ -195,13 +213,25 @@ unsafe fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
     name_buf[..src.len()].copy_from_slice(src);
     let name = &name_buf[..src.len()];
 
+    // Grant проверяется ДО lookup: иначе по ENOENT/EACCES процесс без прав
+    // мог бы узнать, какие файлы существуют. Берём perms (u8, Copy), а не &Grant,
+    // чтобы не держать заимствование p.grants при push в p.fds.
+    let granted = p
+        .grants
+        .iter()
+        .find(|g| g.name.as_bytes() == name)
+        .map_or(0, |g| g.perms);
+    if granted & need != need {
+        return err(EACCES);
+    }
+
     let Some(inode) = crate::ramfs::lookup(name) else {
         return err(ENOENT);
     };
     let file = OpenFile {
         inode,
         offset: 0,
-        perms: 0,
+        perms: need,
     };
 
     // Первый свободный слот начиная с 3, иначе — растим таблицу до MAX_FDS.
@@ -232,16 +262,12 @@ unsafe fn sys_read(fd: u64, buf: u64, len: u64) -> u64 {
     let Some(f) = p.fds[fd].as_mut() else {
         return err(EBADF);
     };
-
-    let data = f.inode.data.lock();
-    if f.offset >= data.len() {
-        return 0;
+    if f.perms & PERM_READ == 0 {
+        return err(EBADF);
     }
-    let left = data.len() - f.offset;
-    let n = min(len as usize, left);
-    let dst = core::slice::from_raw_parts_mut(buf as *mut u8, n);
-    let src = &data[f.offset..f.offset + n];
-    dst.copy_from_slice(src);
+
+    let dst = core::slice::from_raw_parts_mut(buf as *mut u8, len as usize);
+    let n = f.inode.read_at(f.offset, dst);
     f.offset += n;
     n as u64
 }
