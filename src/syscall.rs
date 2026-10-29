@@ -31,6 +31,78 @@ pub const SYSCALL_MASK: u64 = (1 << SYS_READ)
 #[no_mangle]
 pub static mut SYSCALL_KERNEL_RSP: u64 = 0;
 
+/// Отложенный запрос переключения. `sys_yield` не переключается сам: внутри
+/// обработчика нет user RIP/RSP, а syscall-стек общий на все процессы.
+/// Флаг проверяет `syscall_entry.s` сразу после возврата из обработчика —
+/// там user-фрейм ещё цел, и `syscall_reschedule` может его сохранить.
+#[no_mangle]
+pub static mut RESCHED_PENDING: u8 = 0;
+
+/// Раскладка стека `syscall_entry.s` в момент возврата из `syscall_handler`.
+/// Поля идут в порядке push (r15 лежит выше всех, rsp — ниже всех).
+#[repr(C)]
+pub struct SyscallFrame {
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    rbp: u64,
+    rbx: u64,
+    rip: u64,
+    rflags: u64,
+    rsp: u64,
+}
+
+/// Сохранить user-контекст текущего процесса из syscall-фрейма и переключиться
+/// на следующий. Вызывается из `syscall_entry.s` (см. `RESCHED_PENDING`),
+/// поэтому не возвращается: уходит в ring-3 через `resume_context`.
+///
+/// Syscall-стек после этого брошен — и это нормально: процесс продолжит с
+/// user RIP (адреса после `syscall`), а не внутри ядра. Следующий syscall
+/// снова начнёт с вершины `SYSCALL_KERNEL_RSP`.
+#[no_mangle]
+pub unsafe extern "C" fn syscall_reschedule(frame: *const SyscallFrame) -> ! {
+    let f = &*frame;
+    let current = scheduler::SCHEDULER.current;
+
+    if let Some(p) = scheduler::SCHEDULER.processes[current].as_mut() {
+        p.context.rax = 0; // yield возвращает 0
+        p.context.rbx = f.rbx;
+        p.context.rbp = f.rbp;
+        p.context.r12 = f.r12;
+        p.context.r13 = f.r13;
+        p.context.r14 = f.r14;
+        p.context.r15 = f.r15;
+        p.context.rip = f.rip;
+        p.context.rflags = f.rflags;
+        p.context.rsp = f.rsp;
+        p.context.cs = 0x23; // user code | RPL=3
+        p.context.ss = 0x1B; // user data | RPL=3
+
+        // caller-saved регистры обработчик уже испортил — по ABI пользователь
+        // не вправе на них рассчитывать. Обнуляем, чтобы не тащить мусор.
+        p.context.rcx = 0;
+        p.context.rdx = 0;
+        p.context.rsi = 0;
+        p.context.rdi = 0;
+        p.context.r8 = 0;
+        p.context.r9 = 0;
+        p.context.r10 = 0;
+        p.context.r11 = 0;
+    }
+
+    // Если других Running нет — возвращаемся в тот же процесс (yield без
+    // соперников = просто выход из syscall).
+    let next = (*(&raw const scheduler::SCHEDULER))
+        .next_running()
+        .unwrap_or(current);
+    scheduler::SCHEDULER.current = next;
+    let p = scheduler::SCHEDULER.processes[next].as_ref().unwrap();
+    (&raw mut crate::tss::TSS).as_mut().unwrap().rsp0 = p.kernel_stack;
+
+    scheduler::resume_context(&p.context as *const _)
+}
+
 const MSR_STAR: u32 = 0xC0000081;
 const MSR_LSTAR: u32 = 0xC0000082;
 const MSR_SYSCALL_MASK: u32 = 0xC0000084;
@@ -316,6 +388,8 @@ unsafe fn sys_exit(_code: u64) -> ! {
 }
 
 unsafe fn sys_yield() -> u64 {
-    scheduler::yield_now();
+    // Переключение выполнит syscall_entry.s после возврата из обработчика:
+    // здесь нет user RIP/RSP, а syscall-стек общий на все процессы.
+    RESCHED_PENDING = 1;
     0
 }

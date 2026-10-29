@@ -37,11 +37,10 @@ pub struct Process {
     pub token: u64,
     pub state: ProcessState,
     pub kernel_stack: u64,
-    pub user_stack: u64,
     pub user_regions: [(u64, u64); 2],
     // Базовые ФИЗИЧЕСКИЕ адреса страниц от pmm::alloc — нужны, чтобы reap()
-    // мог вернуть их в PMM. kernel_stack/user_stack — это вершины (virt),
-    // освобождать по ним нельзя.
+    // мог вернуть их в PMM. kernel_stack — это вершина (virt), освобождать
+    // по ней нельзя.
     pub kernel_stack_phys: u64,
     pub user_stack_phys: u64,
     pub context: Context,
@@ -67,13 +66,7 @@ impl Process {
         // (TSS-стек в main.rs тоже физический — здесь приводим к тому же инварианту.)
         let stack_top = (stack + 4096) & !0xF;
 
-        // кладём entry point на вершину kernel stack
-        unsafe {
-            let stack_ptr = (stack_top - 8) as *mut u64;
-            *stack_ptr = entry;
-        }
-
-        // маппим user stack с флагом USER
+        // user stack маппим с флагом USER
         // user stack — за пределами identity-map (0-1TB покрыта large pages)
         // pml4[2] пустой → vmm::map создаст нормальные 4KB таблицы
         //
@@ -129,7 +122,6 @@ impl Process {
             token: 0,
             state: ProcessState::Running,
             kernel_stack: stack_top,
-            user_stack: user_stack_top,
             kernel_stack_phys: stack,
             user_regions: [
                 (user_code_virt, user_code_virt + CODE_PAGES * PAGE_SIZE),

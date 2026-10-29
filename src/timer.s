@@ -25,42 +25,10 @@ timer_handler_asm:
     test rax, rax
     jz .restore
 
-    # rax → Context нового процесса
-    mov rbx, rax
-
-    # переходим на kernel_stack нового процесса
-    mov rsp, [rbx + 0xA8]
-
-    # строим iretq-фрейм (CPU ожидает снизу вверх: ss, rsp, rflags, cs, rip)
-    mov rax, [rbx + 0x98]
-    push rax                        # SS  из контекста
-    mov rax, [rbx + 0x38]
-    push rax                        # RSP нового процесса
-    mov rax, [rbx + 0x88]
-    push rax                        # RFLAGS
-    mov rax, [rbx + 0x90]
-    push rax                        # CS  из контекста
-    mov rax, [rbx + 0x80]
-    push rax                        # RIP
-
-    # восстанавливаем регистры
-    mov rax, [rbx + 0x00]
-    mov rcx, [rbx + 0x10]
-    mov rdx, [rbx + 0x18]
-    mov rsi, [rbx + 0x20]
-    mov rdi, [rbx + 0x28]
-    mov rbp, [rbx + 0x30]
-    mov r8,  [rbx + 0x40]
-    mov r9,  [rbx + 0x48]
-    mov r10, [rbx + 0x50]
-    mov r11, [rbx + 0x58]
-    mov r12, [rbx + 0x60]
-    mov r13, [rbx + 0x68]
-    mov r14, [rbx + 0x70]
-    mov r15, [rbx + 0x78]
-    mov rbx, [rbx + 0x08]
-
-    iretq
+    # rax → Context нового процесса. Дальше — общий путь возврата в ring-3
+    # (switch.s): он строит iretq-фрейм из Context и восстанавливает регистры.
+    mov rdi, rax
+    jmp resume_context
 
 .restore:                                                                                                                                                                                  
       pop rax                                               

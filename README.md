@@ -84,7 +84,7 @@ System call numbers match Linux x86-64. The goal is to run existing Linux binari
 | `echo <text>` | print text |
 | `ticks` | show the timer tick counter |
 | `ps` | list processes |
-| `spawn <a\|b\|f>` | start a demo process (`f` reads `hello.txt` via syscalls) |
+| `spawn <a\|b\|f\|w\|x\|r\|y>` | start a demo process (`f`/`w` read/write `hello.txt`, `x` checks grants, `r` tests unlink, `y` tests yield) |
 | `kill <pid>` | terminate a process |
 | `mem` | memory statistics |
 | `module` | show loaded modules |
@@ -195,7 +195,7 @@ src/
   syscall.rs       — system call handlers
   syscall_entry.s  — SYSCALL entry/exit (MSR)
   timer.s          — timer interrupt handler, context switch
-  switch.s         — context_switch (in-kernel switch)
+  switch.s         — resume_context (single ring-3 return path)
   keyboard.rs      — PS/2 keyboard
   keyboard.s       — keyboard ISR
   console.rs       — framebuffer console + line discipline

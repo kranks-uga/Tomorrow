@@ -317,6 +317,35 @@ pub extern "C" fn process_b() -> ! {
 }
 
 #[unsafe(naked)]
+pub extern "C" fn process_y() -> ! {
+    // Тест yield: счётчик в rbx (callee-saved) обязан пережить переключение.
+    core::arch::naked_asm!(
+        "mov rbx, 5",
+        "2:",
+        "lea rsi, [rip + 1f]",
+        "mov rax, 1",              // write(1, "Y\n", 2)
+        "mov rdi, 1",
+        "mov rdx, 2",
+        "syscall",
+        "mov rax, 24",             // yield
+        "syscall",
+        "dec rbx",
+        "jnz 2b",
+        "lea rsi, [rip + 3f]",
+        "mov rax, 1",              // write(1, "y done\n", 7)
+        "mov rdi, 1",
+        "mov rdx, 7",
+        "syscall",
+        "mov rax, 60",             // exit(0)
+        "xor rdi, rdi",
+        "syscall",
+        "4: jmp 4b",
+        "1: .byte 0x59, 0x0A",     // "Y\n"
+        "3: .byte 0x79, 0x20, 0x64, 0x6f, 0x6e, 0x65, 0x0A", // "y done\n"
+    )
+}
+
+#[unsafe(naked)]
 pub extern "C" fn process_f() -> ! {
     core::arch::naked_asm!(
         "mov rax, 2",

@@ -168,7 +168,7 @@ fn cmd_help() {
          \x20 echo <text>   print text\n\
          \x20 ticks         show timer tick count\n\
          \x20 ps            list processes\n\
-         \x20 spawn <a|b|f|w|x|r> create a new demo process (a, b, f, w, x or r)\n\
+         \x20 spawn <a|b|f|w|x|r|y> create a new demo process (a, b, f, w, x, r or y)\n\
          \x20 kill <pid>    terminate a process by pid\n\
          \x20 mem           show free physical memory\n\
          \x20 reboot        restart the machine\n\
@@ -294,8 +294,10 @@ fn cmd_spawn(args: &[u8]) {
                 perms: PERM_READ,
             }],
         )
+    } else if eq(args, b"y") {
+        (crate::process_y as *const () as u64, Vec::new())
     } else {
-        console().write_str("usage: spawn <a|b|f|w|x|r>\n");
+        console().write_str("usage: spawn <a|b|f|w|x|r|y>\n");
         return;
     };
 

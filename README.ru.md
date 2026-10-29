@@ -84,7 +84,7 @@
 | `echo <текст>` | вывести текст |
 | `ticks` | показать счётчик таймерных тиков |
 | `ps` | список процессов |
-| `spawn <a\|b\|f>` | запустить демо-процесс (`f` читает `hello.txt` через syscalls) |
+| `spawn <a\|b\|f\|w\|x\|r\|y>` | запустить демо-процесс (`f`/`w` читают и пишут `hello.txt`, `x` проверяет grants, `r` — unlink, `y` — yield) |
 | `kill <pid>` | завершить процесс |
 | `mem` | статистика памяти |
 | `module` | список загруженных модулей |
@@ -195,7 +195,7 @@ src/
   syscall.rs       — обработчик системных вызовов
   syscall_entry.s  — вход/выход SYSCALL (MSR)
   timer.s          — обработчик прерывания таймера, context switch
-  switch.s         — context_switch (переключение из ядра)
+  switch.s         — resume_context (единый путь возврата в ring-3)
   keyboard.rs      — PS/2 клавиатура
   keyboard.s       — ISR клавиатуры
   console.rs       — framebuffer-консоль + line discipline

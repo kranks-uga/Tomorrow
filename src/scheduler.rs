@@ -66,9 +66,9 @@ impl Scheduler {
     }
 
     /// Индекс следующего `Running`-процесса после текущего (round-robin).
-    /// Общая логика для `yield_now` и `timer_do_switch` — раньше каждый
-    /// переключатель реализовывал этот же обход отдельно, и один из них
-    /// (`yield_now`) забывал обновить `TSS.rsp0` после переключения.
+    /// Общая логика для `syscall_reschedule` и `timer_do_switch`: раньше
+    /// каждый переключатель реализовывал этот обход отдельно, и `yield_now`
+    /// забывал обновить `TSS.rsp0` после переключения.
     pub(crate) fn next_running(&self) -> Option<usize> {
         for i in 1..64 {
             let idx = (self.current + i) % 64;
@@ -104,40 +104,16 @@ impl Scheduler {
     }
 }
 
-pub unsafe fn yield_now() {
-    let current = SCHEDULER.current;
-
-    if let Some(idx) = (*(&raw const SCHEDULER)).next_running() {
-        let old = &mut SCHEDULER.processes[current].as_mut().unwrap().context as *mut Context;
-        let new = &SCHEDULER.processes[idx].as_ref().unwrap().context as *const Context;
-        SCHEDULER.current = idx;
-        (&raw mut crate::tss::TSS).as_mut().unwrap().rsp0 =
-            SCHEDULER.processes[idx].as_ref().unwrap().kernel_stack;
-        context_switch(old, new);
-    }
-}
-
 pub unsafe fn start_first_process_ring3() -> ! {
     let proc = SCHEDULER.processes[0].as_ref().unwrap();
-    let rip = proc.context.rip;
-    let rsp = proc.user_stack;
-
     (&raw mut crate::tss::TSS).as_mut().unwrap().rsp0 = proc.kernel_stack;
 
-    // iretq frame (low → high на стеке): RIP, CS, RFLAGS, RSP, SS
-    core::arch::asm!(
-        "push 0x1B",       // SS  = GDT[3] | RPL=3
-        "push {rsp_val}",  // user RSP
-        "push 0x202",      // RFLAGS: IF=1, reserved=1
-        "push 0x23",       // CS  = GDT[4] | RPL=3
-        "push {rip_val}",  // user RIP
-        "iretq",
-        rsp_val = in(reg) rsp,
-        rip_val = in(reg) rip,
-        options(noreturn)
-    );
+    // Тот же путь, что у таймера и yield: никакого отдельного iretq-фрейма.
+    resume_context(&proc.context as *const _);
 }
 
 extern "C" {
-    pub fn context_switch(old: *mut Context, new: *const Context);
+    /// Единственный путь возврата в ring-3: собрать iretq-фрейм из Context
+    /// и прыгнуть в user space (см. switch.s).
+    pub fn resume_context(ctx: *const Context) -> !;
 }

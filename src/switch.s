@@ -1,62 +1,48 @@
 .intel_syntax noprefix
-.global context_switch
+.global resume_context
 
-context_switch:
-    # rdi = old: *mut Context
-    # rsi = new: *const Context
+# resume_context(ctx: *const Context) -> !
+#
+# Единственный путь возврата в ring-3: собрать iretq-фрейм из Context и
+# прыгнуть в user space. Вызывается из трёх мест:
+#   - start_first_process_ring3 — первый запуск процесса;
+#   - syscall_reschedule        — yield внутри syscall;
+#   - timer_handler_asm         — истёк квант, переключаемся на другой процесс.
+#
+# Раньше путей было два: таймер строил iretq-фрейм, а context_switch
+# возвращался через ret по ядерному адресу. Смешать их — значит прыгнуть
+# на user-адрес в ring 0 (или на ядерный адрес в ring 3). Теперь все
+# переключения заканчиваются здесь.
+resume_context:
+    # rdi = *const Context
+    mov rbx, rdi
 
-    # --- сохраняем регистры old ---
-    mov [rdi + 0x00], rax
-    mov [rdi + 0x08], rbx
-    mov [rdi + 0x10], rcx
-    mov [rdi + 0x18], rdx
-    mov [rdi + 0x20], rsi
-    mov [rdi + 0x28], rdi
-    mov [rdi + 0x30], rbp
-    mov [rdi + 0x38], rsp   # rsp после push return addr (call instruction)
-    mov [rdi + 0x40], r8
-    mov [rdi + 0x48], r9
-    mov [rdi + 0x50], r10
-    mov [rdi + 0x58], r11
-    mov [rdi + 0x60], r12
-    mov [rdi + 0x68], r13
-    mov [rdi + 0x70], r14
-    mov [rdi + 0x78], r15
+    # Стек процесса: вершина его kernel-стека (TSS.rsp0). Старый стек
+    # вызывающего (syscall-стек или прерванный kernel-стек) больше не нужен.
+    mov rsp, [rbx + 0xA8]
 
-    # rip = адрес возврата (call положил его на стек)
-    mov rax, [rsp]
-    mov [rdi + 0x80], rax
+    # iretq-фрейм, снизу вверх: SS, RSP, RFLAGS, CS, RIP.
+    push qword ptr [rbx + 0x98]     # SS
+    push qword ptr [rbx + 0x38]     # RSP
+    push qword ptr [rbx + 0x88]     # RFLAGS
+    push qword ptr [rbx + 0x90]     # CS
+    push qword ptr [rbx + 0x80]     # RIP
 
-    # rflags
-    pushfq
-    pop rax
-    mov [rdi + 0x88], rax
+    # Восстанавливаем регистры; rbx последним, потому что он — база.
+    mov rax, [rbx + 0x00]
+    mov rcx, [rbx + 0x10]
+    mov rdx, [rbx + 0x18]
+    mov rsi, [rbx + 0x20]
+    mov rdi, [rbx + 0x28]
+    mov rbp, [rbx + 0x30]
+    mov r8,  [rbx + 0x40]
+    mov r9,  [rbx + 0x48]
+    mov r10, [rbx + 0x50]
+    mov r11, [rbx + 0x58]
+    mov r12, [rbx + 0x60]
+    mov r13, [rbx + 0x68]
+    mov r14, [rbx + 0x70]
+    mov r15, [rbx + 0x78]
+    mov rbx, [rbx + 0x08]
 
-    # --- восстанавливаем регистры new ---
-    mov rbx, [rsi + 0x08]
-    mov rcx, [rsi + 0x10]
-    mov rdx, [rsi + 0x18]
-    mov rbp, [rsi + 0x30]
-    mov r8,  [rsi + 0x40]
-    mov r9,  [rsi + 0x48]
-    mov r10, [rsi + 0x50]
-    mov r11, [rsi + 0x58]
-    mov r12, [rsi + 0x60]
-    mov r13, [rsi + 0x68]
-    mov r14, [rsi + 0x70]
-    mov r15, [rsi + 0x78]
-
-    # ставим новый rsp — он указывает на return address нового процесса
-    mov rsp, [rsi + 0x38]
-
-    # кладём rflags на стек (push + popfq не трогают rsp net-нулю)
-    mov rax, [rsi + 0x88]
-    push rax                # rsp -= 8
-
-    # загружаем rdi, rax, rsi последними
-    mov rdi, [rsi + 0x28]
-    mov rax, [rsi + 0x00]
-    mov rsi, [rsi + 0x20]
-
-    popfq                   # восстанавливаем rflags, rsp += 8 → снова на return addr
-    ret                     # pop return addr, rsp += 8 = исходный SP ✓
+    iretq

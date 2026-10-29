@@ -268,12 +268,13 @@ idt::init()
         iretq                        ← возврат в тот же процесс
 
     else (context switch):
-      rbx = rax (→ Context нового процесса)
-      rsp = Context.kernel_stack         ← переключаемся на стек нового процесса
-      строим iretq-фрейм: ss, rsp, rflags, cs, rip  ← всё из Context
-      восстанавливаем регистры из Context
-      iretq                              ← прыжок в новый процесс
+      rdi = rax (→ Context нового процесса)
+      jmp resume_context                 ← switch.s: единый путь в ring-3
 ```
+
+`resume_context` — единственное место, где строится iretq-фрейм и
+восстанавливаются регистры. Им пользуются таймер, `syscall_reschedule`
+(yield) и первый запуск процесса.
 
 ---
 
@@ -312,7 +313,7 @@ Process {
     pid, syscall_mask, domain, token,
     state: ProcessState,      // Running / Blocked / Dead
     kernel_stack: u64,        // вершина ядерного стека (для TSS.rsp0)
-    user_stack: u64,          // вершина пользовательского стека
+    user_regions: [(u64, u64); 2],  // код и стек — проверка user-указателей
     context: Context,         // сохранённые регистры
 }
 ```
@@ -384,19 +385,14 @@ SCHEDULER: Scheduler {
 ```
 
 Если возвращён null — `timer.s` просто восстанавливает регистры и делает iretq в тот же процесс.
-Если возвращён Context — `timer.s` переключается на новый процесс через iretq.
+Если возвращён Context — `timer.s` прыгает в `resume_context` (switch.s),
+который строит iretq-фрейм из `Context` и уходит в ring-3.
 
 ### start_first_process_ring3
 
-Запускает первый процесс в ring-3 через `iretq`:
-```asm
-push 0x1B           // SS  (user data, DPL=3)
-push user_rsp       // RSP пользователя
-push 0x202          // RFLAGS (IF=1)
-push 0x23           // CS  (user code, DPL=3)
-push context.rip    // RIP нового процесса
-iretq               // → ring-3
-```
+Запускает первый процесс тем же путём, что и остальные переключения:
+выставляет `TSS.rsp0` и вызывает `resume_context(&proc.context)`. Отдельного
+iretq-фрейма больше нет — все возвраты в ring-3 идут через `switch.s`.
 
 > **Примечание AMD:** после `sysretq` SS.RPL может не выставляться как 3.
 > В `timer.s` применяется фикс: `or WORD PTR [rsp+32], 3` перед `iretq` в `.restore:` —
@@ -435,10 +431,20 @@ syscall_entry:
        Linux ABI:  rax=nr, rdi, rsi, rdx, r10, r8
        C ABI:      rdi=nr, rsi, rdx, rcx, r8,  r9
   6. call syscall_handler
-  7. pop r15-r12, rbp, rbx
-  8. pop rcx (user RIP), r11 (user RFLAGS), rsp (user RSP)
-  9. sysretq → ring-3
+  7. if RESCHED_PENDING:            ← yield попросил переключение
+       syscall_reschedule(rsp)      ← сохранить user-фрейм и уйти в ring-3
+                                    ← назад не возвращается (resume_context)
+  8. pop r15-r12, rbp, rbx
+  9. pop rcx (user RIP), r11 (user RFLAGS), rsp (user RSP)
+ 10. sysretq → ring-3
 ```
+
+`yield` не переключается внутри обработчика: там уже нет user `rip`/`rsp`,
+а syscall-стек один на всех. Флаг `RESCHED_PENDING` проверяется в
+`syscall_entry.s`, пока user-фрейм цел. `syscall_reschedule` сохраняет
+callee-saved и user-контекст в `Context` и вызывает `resume_context`.
+Syscall-стек бросается — процесс продолжает с адреса после `syscall`, а не
+внутри ядра, поэтому восстанавливать его не нужно.
 
 ### Таблица системных вызовов
 
@@ -473,7 +479,7 @@ GRUB → start32 → start64 → start64_high → kernel_main
   ├── LAPIC::enable, IO APIC redirect, sti
   ├── Process::new(process_a) → SCHEDULER.add_process
   ├── kprint!("Scheduler ok")
-  └── start_first_process_ring3 → iretq → process_a в ring-3
+  └── start_first_process_ring3 → resume_context → iretq → process_a в ring-3
 ```
 
 > `SCHEDULER_READY` пока = false → таймер не переключает процессы, только делает EOI.
