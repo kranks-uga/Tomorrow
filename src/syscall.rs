@@ -119,6 +119,9 @@ pub unsafe extern "C" fn syscall_handler(
     _arg5: u64,
 ) -> u64 {
     if !syscall_exists(nr) {
+        // Первый шаг трека F: по serial-логу сразу видно, какой вызов просит
+        // Linux-бинарь. Печатать дешевле, чем искать вслепую.
+        crate::sprintln!("unknown syscall {}", nr);
         return err(ENOSYS);
     }
     if !syscall_allowed(nr) {

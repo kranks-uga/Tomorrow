@@ -25,6 +25,7 @@ mod pmm;
 mod process;
 mod ramfs;
 mod scheduler;
+mod serial;
 mod shell;
 mod syscall;
 mod tss;
@@ -47,6 +48,17 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
                 console.write_dec(loc.line() as u64);
             }
             console.write_byte(b'\n');
+        }
+    }
+    // Дублируем в UART: если консоль залипла или экран не виден, паника
+    // всё равно останется в serial-логе. try_* — паника не должна встать
+    // в дедлок на локе, который сама же и держала.
+    match info.location() {
+        Some(loc) => {
+            crate::serial::try_print(format_args!("\nPANIC at {}:{}\n", loc.file(), loc.line()));
+        }
+        None => {
+            crate::serial::try_print(format_args!("\nPANIC\n"));
         }
     }
     loop {}
@@ -148,6 +160,16 @@ macro_rules! kprint {
                 .write_str($s);
         }
     };
+}
+
+/// Boot-сообщение сразу в две стороны: на экран и в serial. Только для
+/// загрузки — в обработчике прерываний serial-лок брать нельзя.
+#[macro_export]
+macro_rules! bootlog {
+    ($s:expr) => {{
+        $crate::kprint!($s);
+        $crate::sprint!($s);
+    }};
 }
 
 #[macro_export]
@@ -551,6 +573,11 @@ pub extern "C" fn process_r() -> ! {
 
 #[no_mangle]
 pub extern "C" fn kernel_main(boot_info: u64) -> ! {
+    // UART поднимаем до всего остального: дальше каждое веховое сообщение
+    // дублируется в serial (bootlog!), и падение на любом этапе будет видно.
+    serial::init();
+    sprintln!("\n--- Tomorrow OS serial log ---");
+
     let mut xsdt_addr: u64 = 0;
     let mut mmap_addr: u64 = 0;
     let mut mmap_size: u32 = 0;
@@ -592,16 +619,16 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                         .unwrap()
                         .clear();
                 }
-                kprint!("Tomorrow OS\n");
+                bootlog!("Tomorrow OS\n");
                 idt::init();
-                kprint!("IDT ok\n");
+                bootlog!("IDT ok\n");
                 idt::set_handler(0xFF, idt::spurious_handler as *const () as u64);
                 idt::set_handler(0x20, idt::timer_handler_asm as *const () as u64);
                 idt::set_handler(0x21, idt::keyboard_handler_asm as *const () as u64);
                 idt::set_handler(0x0D, idt::gp_handler_asm as *const () as u64);
                 idt::set_handler(0x0E, idt::pf_handler_asm as *const () as u64);
                 pic::disable();
-                kprint!("PIC off\n");
+                bootlog!("PIC off\n");
             }
             15 => {
                 let rsdp = unsafe { &*((ptr as *const u8).add(8) as *const Rsdp) };
@@ -622,35 +649,36 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             MOD_END = mod_end;
         }
     }
-    kprint!("PMM ok\n");
+    bootlog!("PMM ok\n");
 
     // === TSS ===
     let kernel_stack = unsafe { pmm::alloc() + 4096 }; // +4096 — стек растёт вниз
     unsafe {
         tss::init(kernel_stack);
     }
-    kprint!("TSS ok\n");
+    bootlog!("TSS ok\n");
 
     kprint!("module: start=");
     write_hex!(mod_start);
     kprint!(" size=");
     crate::write_hex!(mod_end - mod_start); // или write_dec, если есть макрос
     kprint!("\n");
+    sprintln!("module: start={:#x} size={:#x}", mod_start, mod_end - mod_start);
 
     // === HEAP ===
     let heap_start = unsafe { pmm::alloc_pages(256) }; // 256 страниц = 1 MB
     heap::HEAP.init(heap_start, 256 * 4096);
     heap::self_test();
-    kprint!("HEAP ok\n");
+    bootlog!("HEAP ok\n");
     ramfs::init();
 
     // === VMM ===
     // Identity map из boot.s покрывает всю физическую память — доп. маппинг не нужен
-    kprint!("VMM ok\n");
+    bootlog!("VMM ok\n");
 
     // === SYSCALL ===
     syscall::init();
-    kprint!("Syscall ok\n");
+    bootlog!("Syscall ok\n");
 
     // === ACPI ===
     let mut xhci_bar_phys: Option<u64> = None;
@@ -675,7 +703,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 unsafe {
                     core::arch::asm!("sti");
                 }
-                kprint!("APIC ok\n");
+                bootlog!("APIC ok\n");
             }
         }
 
@@ -690,6 +718,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 kprint!("MCFG: ");
                 write_hex!(mcfg_base);
                 kprint!("\n");
+                sprintln!("MCFG: {:#x}", mcfg_base);
                 unsafe { pci::enumerate(mcfg_base) };
                 xhci_bar_phys = unsafe { pci::find_xhci(mcfg_base) };
             }
@@ -702,6 +731,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 kprint!("PM1a_CNT: ");
                 write_hex!(pm1a_cnt as u64);
                 kprint!("\n");
+                sprintln!("PM1a_CNT: {:#x}", pm1a_cnt);
 
                 // сохранить в статики для команды shutdown
                 unsafe {
@@ -719,8 +749,9 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                     kprint!("SLP_TYPa: ");
                     write_hex!(a as u64);
                     kprint!("\n");
+                    sprintln!("SLP_TYPa: {:#x} SLP_TYPb: {:#x}", a, b);
                 } else {
-                    kprint!("_S5 not found\n");
+                    bootlog!("_S5 not found\n");
                 }
             }
 
@@ -752,11 +783,12 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
         kprint!("xhci bar: ");
         write_hex!(bar_phys);
         kprint!("\n");
+        sprintln!("xhci bar: {:#x}", bar_phys);
         unsafe {
             xhci::init(bar_phys);
         }
     } else {
-        kprint!("xhci not found\n");
+        bootlog!("xhci not found\n");
     }
 
     // === Scheduler ===
@@ -784,7 +816,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             .unwrap()
             .add_process(proc_b);
     }
-    kprint!("Scheduler ok\n");
+    bootlog!("Scheduler ok\n");
     unsafe {
         // CLI до SCHEDULER_READY: если таймер сработает между READY=true и
         // первым iretq, он сохранит ядровый RIP в context.rip proc_a и
@@ -858,6 +890,7 @@ fn parse_madt(addr: u64) -> u64 {
     kprint!("Local APIC: ");
     write_hex!(local_apic_address as u64);
     kprint!("\n");
+    sprintln!("Local APIC: {:#x}", local_apic_address);
 
     let mut offset: u64 = 36 + 8;
     while offset < length as u64 {
@@ -874,6 +907,7 @@ fn parse_madt(addr: u64) -> u64 {
                 kprint!(" flags=");
                 write_hex!(flags as u64);
                 kprint!("\n");
+                sprintln!("CPU apic_id={:#x} flags={:#x}", apic_id, flags);
             }
             1 => {
                 let e = unsafe { &*(entry_ptr.add(2) as *const MadtIoApic) };

@@ -73,6 +73,7 @@ System call numbers match Linux x86-64. The goal is to run existing Linux binari
 | RAM FS (ramfs) — `Arc`-based inodes, file creation and writing | done |
 | File syscalls — per-process fd table, open/read/close | done |
 | ACPI shutdown / reboot | done |
+| Serial COM1 — boot log and panics over UART | done |
 
 ### Shell commands
 
@@ -202,6 +203,7 @@ src/
   pci.rs           — finds xHCI via MCFG/PCIe
   xhci.rs          — xHCI USB controller and HID keyboard
   shell.rs         — interactive shell
+  serial.rs        — COM1 (16550 UART): boot log, panics, unknown syscall
   ramfs.rs         — RAM file system
 boot/grub/grub.cfg — bootloader config (kernel + initrd)
 initrd.tar         — initial RAM disk with user modules
@@ -221,6 +223,7 @@ Detailed write-ups of each subsystem live in [`md/`](md/) (currently in Russian)
 | [`ramfs.md`](md/ramfs.md) | file system: initrd (tar) → heap, writable ramfs, `ls/cat/write/touch/rm` commands |
 | [`console.md`](md/console.md) | screen output: framebuffer, PSF2 font rendering, the `Console` API |
 | [`shell.md`](md/shell.md) | input and shell: keyboard (PS/2 + USB), `on_char`, line discipline, command dispatch |
+| [`serial.md`](md/serial.md) | COM1: UART setup, `sprint!`/`sprintln!`, boot log and panics, reading the log |
 
 ---
 

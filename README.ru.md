@@ -73,6 +73,7 @@
 | RAM FS (ramfs) — inode на `Arc`, создание и запись файлов | готово |
 | Файловые syscalls — fd-таблица процесса, open/read/close | готово |
 | ACPI shutdown / reboot | готово |
+| Serial COM1 — boot-лог и паники в UART | готово |
 
 ### Команды шелла
 
@@ -202,6 +203,7 @@ src/
   pci.rs           — поиск xHCI через MCFG/PCIe
   xhci.rs          — xHCI USB-контроллер и HID-клавиатура
   shell.rs         — интерактивный шелл с командами
+  serial.rs        — COM1 (16550 UART): boot-лог, паники, unknown syscall
   ramfs.rs         — RAM-файловая система
 boot/grub/grub.cfg — конфиг загрузчика (ядро + initrd)
 initrd.tar         — начальный RAM-диск с пользовательскими модулями
@@ -221,6 +223,7 @@ md/               — подробная документация подсист
 | [`ramfs.md`](md/ramfs.md) | файловая система: initrd (tar) → heap, writable ramfs, команды `ls/cat/write/touch/rm` |
 | [`console.md`](md/console.md) | вывод на экран: framebuffer, рендер PSF2-шрифта, API `Console` |
 | [`shell.md`](md/shell.md) | ввод и шелл: клавиатура (PS/2 + USB), `on_char`, line discipline, диспетч команд |
+| [`serial.md`](md/serial.md) | COM1: инициализация UART, `sprint!`/`sprintln!`, boot-лог и паники, чтение лога |
 
 ---
 

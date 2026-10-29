@@ -24,6 +24,7 @@ Linux-бинарей. Детальный план файловой систем�
 | Консоль | framebuffer + PSF2; скролла нет — экран очищается целиком |
 | Шелл | команды, line discipline (program_output) |
 | USB / xHCI | работает на железе: хабы + TT, boot-клавиатура |
+| Serial COM1 | готово: TX 115200 8N1, boot-лог и паники в UART (`md/serial.md`) |
 | ramfs | writable, `Mutex<Vec<File>>` — переделка по `plan-fs.md` |
 
 Архитектурные долги, из которых вырастает план:
@@ -171,6 +172,10 @@ unknown syscall → реализовал → дальше». Это самый �
 - **E.1 Serial COM1** (~50 строк, порт 0x3F8): boot-лог, паники, «unknown
   syscall» — всё в UART. Железо: USB-TTL кабель; QEMU: `-serial stdio`.
   **Сделать первым из всего плана** — удешевляет каждую следующую отладку.
+  **Сделано (2026-10-29):** `src/serial.rs` — TX-only, 115200 8N1, опрос LSR
+  с таймаутом, `sprint!`/`sprintln!`; `bootlog!` дублирует вехи загрузки,
+  паника и `unknown syscall N` пишутся в UART. Проверено headless-запуском
+  QEMU. Детали — [`serial.md`](serial.md).
 - **E.2** Скролл консоли: memmove пиксельных строк вместо очистки экрана.
 - **E.3** Панике — backtrace: пройти по цепочке RBP (собираем с
   force-frame-pointers), печатать адреса; символы смотреть в `nm` на хосте.

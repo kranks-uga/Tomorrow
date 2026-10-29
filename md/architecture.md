@@ -13,6 +13,7 @@
 10. [Планировщик](#10-планировщик)
 11. [Syscall](#11-syscall)
 12. [Поток выполнения от старта до userspace](#12-поток-выполнения)
+13. [Serial — COM1](#13-serial--com1)
 
 ---
 
@@ -182,22 +183,37 @@ let ptr = &pml4 as *const _ as *mut vmm::PageTable;
 
 **Файл:** `src/heap.rs`
 
-Простой bump-allocator. Выделяет память линейно — только вперёд, освобождения нет.
+Free-list аллокатор (first-fit) с рабочим `dealloc`. Свободные блоки
+образуют односвязный список, заголовок `FreeNode { size, next }` лежит в
+начале самого свободного блока — отдельных метаданных нет.
 
 ```
-HEAP.start ──→ [занято][занято][занято]...[свободно...]  ←── HEAP.end
-                                           ↑
-                                        HEAP.next
+head ──→ [size|next]────→ [size|next]──→ ...
+          свободный блок    свободный блок
+занятые блоки в список не входят: их заголовок перезаписывается данными
 ```
 
 Инициализация в `kernel_main`:
+
 ```rust
-let heap_phys = pmm::alloc();
-let heap_virt = heap_phys + KERNEL_VIRT;
-HEAP.init(heap_virt, 4096 * 16);  // 64 KB
+let heap_start = pmm::alloc_pages(256);   // 256 страниц = 1 MB
+heap::HEAP.init(heap_start, 256 * 4096);
+heap::self_test();                        // alloc/free/alloc при загрузке
 ```
 
-**Текущий статус:** heap выделен, но пока нигде не используется (процессы используют pmm::alloc напрямую).
+Особенности:
+
+- `alloc` — first-fit: первый блок, куда влезает `Layout` с учётом выравнивания;
+- `dealloc` возвращает блок в голову списка;
+- **коалесценции нет**: соседние свободные блоки не сливаются, поэтому
+  длинная серия alloc/free фрагментирует кучу (отложено в `plan-fs.md`, этап 4);
+- лок гасит прерывания (`cli`/`sti` вокруг критической секции) — кучу можно
+  трогать и из обработчиков;
+- `self_test()` при загрузке печатает `HEAP ok` только если alloc/dealloc
+  действительно работают.
+
+Куча используется ramfs (`Arc<Inode>`, `String`, `Vec<u8>`) и структурами
+процессов; страницы под неё выделяются PMM один раз и навсегда.
 
 ---
 
@@ -477,3 +493,27 @@ process_a (ring-3, naked fn):
     → timer_do_switch (SCHEDULER_READY=false → EOI, return null)
     → .restore: fix SS.RPL, iretq обратно в process_a
 ```
+
+---
+
+## 13. Serial — COM1
+
+**Файл:** `src/serial.rs`, подробно — [`serial.md`](serial.md)
+
+Второй, независимый от framebuffer канал вывода: 16550 UART на `0x3F8`,
+115200 8N1, только TX, опрос `LSR.THRE` с таймаутом.
+
+```
+kernel_main
+  ├── serial::init()                    ← раньше всего остального
+  ├── bootlog!("PMM ok\n")              ← kprint! + sprint! (экран + UART)
+  ├── panic → serial::try_print         ← неблокирующий, чтобы не встать в дедлок
+  └── unknown syscall N → sprintln!
+```
+
+`bootlog!` используется только в загрузке: `sprint!` берёт спинлок порта, а
+из обработчика прерываний это грозило бы дедлоком на прерванном писателе.
+Поэтому в `timer_do_switch` остаётся консольный `kprint!`.
+
+Проверка — `./run.sh` (`-serial stdio`) или headless-запуск QEMU с
+`-serial file:...`; ожидаемый лог и ограничения — в `md/serial.md`.
