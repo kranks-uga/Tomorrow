@@ -487,7 +487,7 @@ fn cmd_create(args: &[u8]) {
     }
 
     let (name, _) = split_first_word(args);
-    if crate::ramfs::create(name) {
+    if crate::ramfs::create(name, 0, 0, 0o644) {
         console().write_str("file created\n");
     } else {
         console().write_str("file not created\n");
