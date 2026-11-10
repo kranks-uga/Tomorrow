@@ -20,6 +20,7 @@ mod ioapic;
 mod keyboard;
 mod lapic;
 mod pci;
+mod perm;
 mod pic;
 mod pmm;
 mod process;
@@ -323,24 +324,24 @@ pub extern "C" fn process_y() -> ! {
         "mov rbx, 5",
         "2:",
         "lea rsi, [rip + 1f]",
-        "mov rax, 1",              // write(1, "Y\n", 2)
+        "mov rax, 1", // write(1, "Y\n", 2)
         "mov rdi, 1",
         "mov rdx, 2",
         "syscall",
-        "mov rax, 24",             // yield
+        "mov rax, 24", // yield
         "syscall",
         "dec rbx",
         "jnz 2b",
         "lea rsi, [rip + 3f]",
-        "mov rax, 1",              // write(1, "y done\n", 7)
+        "mov rax, 1", // write(1, "y done\n", 7)
         "mov rdi, 1",
         "mov rdx, 7",
         "syscall",
-        "mov rax, 60",             // exit(0)
+        "mov rax, 60", // exit(0)
         "xor rdi, rdi",
         "syscall",
         "4: jmp 4b",
-        "1: .byte 0x59, 0x0A",     // "Y\n"
+        "1: .byte 0x59, 0x0A",                               // "Y\n"
         "3: .byte 0x79, 0x20, 0x64, 0x6f, 0x6e, 0x65, 0x0A", // "y done\n"
     )
 }
@@ -692,7 +693,11 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     kprint!(" size=");
     crate::write_hex!(mod_end - mod_start); // или write_dec, если есть макрос
     kprint!("\n");
-    sprintln!("module: start={:#x} size={:#x}", mod_start, mod_end - mod_start);
+    sprintln!(
+        "module: start={:#x} size={:#x}",
+        mod_start,
+        mod_end - mod_start
+    );
 
     // === HEAP ===
     let heap_start = unsafe { pmm::alloc_pages(256) }; // 256 страниц = 1 MB
