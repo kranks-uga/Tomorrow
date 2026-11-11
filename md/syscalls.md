@@ -3,7 +3,8 @@
 Справочник по ABI системных вызовов Tomorrow OS: как вызывать, что
 возвращается, какие ошибки бывают и как устроены права на файлы.
 Механика входа в ядро (MSR, `syscall_entry.s`) описана в
-[architecture.md, раздел 11](architecture.md#11-syscall).
+[architecture.md, раздел 11](architecture.md#11-syscall), модель прав —
+в разделе 5 ниже.
 
 **Конвенция одной строкой:** номера syscall'ов и способ возврата ошибок —
 как в Linux x86-64; сигнатуры части вызовов — свои (см. таблицу ниже).
@@ -55,16 +56,16 @@ rax = результат
 
 | Код | Имя | Значение | Где возникает |
 |---:|---|---|---|
-| 1 | `EPERM` | нет прав на операцию | syscall запрещён `syscall_mask` процесса |
-| 2 | `ENOENT` | нет такого файла | `open`: grant есть, но файла в ramfs нет |
+| 1 | `EPERM` | нет прав на операцию | syscall запрещён `syscall_mask` процесса; `chmod` не владельцем и не root |
+| 2 | `ENOENT` | нет такого файла | `open`/`access`/`chmod`: grant есть, но файла в ramfs нет |
 | 3 | `ESRCH` | нет такого процесса | любой вызов, если слот текущего процесса пуст (внутренняя ошибка ядра, на практике не возникает) |
 | 9 | `EBADF` | плохой fd | `read`/`write`/`close`: fd вне таблицы или закрыт; `read`/`write` в fd, открытый без нужного режима |
-| 13 | `EACCES` | доступ запрещён | `open`: нет grant на файл или в grant не хватает прав |
+| 13 | `EACCES` | доступ запрещён | нет grant, в grant не хватает прав, или DAC (`mode`/`uid`/`gid`) не пустил |
 | 14 | `EFAULT` | плохой адрес | указатель+длина не лежат целиком в одном user-регионе процесса |
-| 22 | `EINVAL` | неверный аргумент | `open`: пустое имя, неизвестные биты во `flags`, режим `3` |
+| 22 | `EINVAL` | неверный аргумент | `open`: пустое имя, неизвестные биты во `flags`, режим `3`; `access`: биты вне `0o7`; `chmod`: режим вне `0o777` |
 | 24 | `EMFILE` | слишком много открытых файлов | `open`: заняты все `MAX_FDS` (16) слотов |
 | 27 | `EFBIG` | файл слишком большой | `write`: файл превысил бы `MAX_FILE_SIZE` (64 КБ) |
-| 36 | `ENAMETOOLONG` | слишком длинное имя | `open`: `path_len > MAX_PATH` (100) |
+| 36 | `ENAMETOOLONG` | слишком длинное имя | `open`/`access`/`chmod`: `path_len > MAX_PATH` (100) |
 | 38 | `ENOSYS` | нет такого вызова | неизвестный номер syscall |
 
 ---
@@ -77,8 +78,14 @@ rax = результат
 | 1 | `write` | `fd, buf, len` | `len` | `EBADF`, `EFAULT`, `EFBIG` |
 | 2 | `open` | `path_ptr, path_len, flags` | fd (≥ 3) | `EINVAL`, `ENAMETOOLONG`, `EFAULT`, `EACCES`, `ENOENT`, `EMFILE` |
 | 3 | `close` | `fd` | `0` | `EBADF` |
+| 21 | `access` | `path_ptr, path_len, mode` | `0` | `EINVAL`, `ENAMETOOLONG`, `EFAULT`, `EACCES`, `ENOENT` |
 | 24 | `yield` | — | `0` | — |
 | 60 | `exit` | `code` (пока игнорируется) | не возвращается | — |
+| 90 | `chmod` | `path_ptr, path_len, mode` | `0` | `EINVAL`, `ENAMETOOLONG`, `EFAULT`, `EACCES`, `ENOENT`, `EPERM` |
+
+`access`: `mode` — `R_OK=4`, `W_OK=2`, `X_OK=1`, `F_OK=0`; другие биты →
+`EINVAL`. `chmod`: `mode` — `0..0o777`. Оба вызова принимают путь парой
+«указатель + длина», как `open`.
 
 **Как работает `yield`.** Обработчик не переключает процесс сам: в этот
 момент на стеке нет user `rip`/`rsp`, а syscall-стек
@@ -131,6 +138,10 @@ syscall снова начинает с вершины `SYSCALL_KERNEL_RSP`.
 | `O_RDWR` | 2 | `PERM_READ \| PERM_WRITE` |
 | — | 3 | `EINVAL` |
 
+Нужные права проверяются **дважды**: сначала в grant процесса
+(`granted & need == need`), затем в DAC inode (`perm::allowed`). Подробнее —
+в разделе 5.
+
 Любые биты вне `O_ACCMODE` (`O_CREAT`, `O_TRUNC`, `O_APPEND`, …) пока дают
 `EINVAL`: лучше явно отказать, чем молча проигнорировать.
 
@@ -138,32 +149,50 @@ syscall снова начинает с вершины `SYSCALL_KERNEL_RSP`.
 
 ## 5. Модель прав на файлы
 
-У каждого процесса есть список **grants** (`Process::grants`), который задаётся
-при создании (`Process::new`, сейчас — в `shell::cmd_spawn`):
+Модель гибридная: **capability grants** у процесса + **Unix DAC** на inode.
+Здесь — сводка.
 
 ```rust
-pub struct Grant { pub name: String, pub perms: u8 }  // PERM_READ | PERM_WRITE
+pub struct Grant { pub name: String, pub perms: u16 } // PERM_R | PERM_W | PERM_X
+
+pub struct Process { pub uid: u32, pub gid: u32, pub grants: Vec<Grant>, ... }
+
+pub struct Inode { uid: u32, gid: u32, mode: u16, ... } // rwxrwxrwx
 ```
 
-Процесс видит только файлы из своего списка; всё остальное для него
-недоступно.
+Процесс видит только файлы из своего списка grants. Но grant — это лишь
+разрешение **назвать** файл: конкретное `r`/`w`/`x` дополнительно проверяется
+по `uid/gid/mode` inode.
 
 ### Где проверяются права
 
 ```
 open(path, len, flags)
-  1. flags → need (нужные права)         ── EINVAL
+  1. flags → need                        ── EINVAL
   2. длина, указатель, копия имени       ── ENAMETOOLONG / EFAULT
   3. grant по имени: granted & need == need ── EACCES
-  4. ramfs::lookup                        ── ENOENT
-  5. OpenFile { perms: need, offset: 0 }  → fd
+  4. ramfs::lookup                       ── ENOENT
+  5. perm::allowed(mode, uid, gid, ...)  ── EACCES
+  6. OpenFile { perms: need, offset: 0 } → fd
+
+access(path, len, mode)
+  grant (любой, даже для F_OK) → lookup → DAC   ── EACCES / ENOENT
+
+chmod(path, len, mode)
+  grant (любой) → lookup → владелец или root    ── EACCES / ENOENT / EPERM
 
 read(fd)  : OpenFile.perms содержит PERM_READ  иначе EBADF
 write(fd) : OpenFile.perms содержит PERM_WRITE иначе EBADF
 ```
 
+`perm::allowed` выбирает один класс — owner, group или other — и требует,
+чтобы `need` целиком содержался в его битах. `uid == 0` обходит DAC, но не
+grant.
+
 Принципы:
 
+- **Оба слоя обязательны.** Grant на запись не поможет, если DAC запрещает
+  `w` (и наоборот).
 - **Права проверяются один раз — в `open`.** Результат запоминается в
   `OpenFile.perms`; `read`/`write` проверяют только этот бит, без поиска
   по grants. Так же делает Unix.
@@ -172,15 +201,20 @@ write(fd) : OpenFile.perms содержит PERM_WRITE иначе EBADF
   ошибке — принцип минимальных прав.
 - **Grant проверяется до `lookup`.** Иначе по разнице `ENOENT` / `EACCES`
   процесс без прав мог бы узнать, какие файлы существуют.
+- **`access(F_OK)` тоже требует grant.** Существование файла — информация;
+  без capability-проверки `access` стал бы оракулом имён.
 - **Условие — `granted & need == need`, а не `!= 0`.** Иначе `O_RDWR` при
   grant только на чтение прошёл бы проверку.
 
 ### Чего модель (пока) не делает
 
-- **Шелл доверенный.** Команды `cat`, `write`, `touch`, `rm` работают в ядре
-  и grants не проверяют. Права ограничивают процессы, не шелл.
+- **Шелл доверенный.** Команды `cat`, `write`, `touch`, `rm`, `chmod`,
+  `chown` работают в ядре и grants не проверяют. Права ограничивают
+  процессы, не шелл.
 - **Grants по имени.** Если файл удалить и создать заново под тем же именем,
   grant продолжит действовать на новый файл.
+- **Нет `setuid`/ACL/дополнительных групп.** Только 9 бит режима и первичный
+  `gid`.
 - **Лимит размера — на файл, а не на ФС.** 16 файлов по 64 КБ исчерпают
   кучу (1 МБ); `touch` в шелле создаёт файлы без ограничений.
 
@@ -200,8 +234,8 @@ write(fd) : OpenFile.perms содержит PERM_WRITE иначе EBADF
 Проверка по флагу `PAGE_USER` в page tables не подходит: pml4 общий, и
 страницы чужих процессов тоже помечены `PAGE_USER`.
 
-Имя файла в `open` после проверки **копируется** в буфер ядра
-(`name_buf`), и дальше ядро работает только с копией — защита от
+Имя файла копируется в буфер ядра хелпером `user_path` (общий для `open`,
+`access`, `chmod`), и дальше ядро работает только с копией — защита от
 изменения строки между проверкой и использованием (TOCTOU).
 
 **Известное ограничение:** `user_range_ok` не проверяет, можно ли писать в
@@ -215,13 +249,31 @@ read-only (трек C), `read` в кодовую страницу приведё
 
 | Команда | Grant | Что проверяет |
 |---|---|---|
+| `spawn p` | `hello.txt`: READ\|WRITE\|EXEC | матрица DAC: `access(R/W/X)`, `open(O_WRONLY)`, `chmod`, обращение без grant |
 | `spawn f` | `hello.txt`: READ | `open(O_RDONLY)` → `read` по 16 байт → вывод → `close` |
 | `spawn w` | `hello.txt`: WRITE | `open(O_WRONLY)` → две записи: перезапись, сдвиг `offset`, рост файла |
 | `spawn x` | `hello.txt`: READ | запреты: `x1` — `open(O_WRONLY)`, `x2` — `write` в fd `O_RDONLY`, `x3` — `open` файла без grant |
 | `spawn r` | `hello.txt`: READ | удаление открытого файла: данные доступны через fd после `rm` |
 
-После `spawn w` файл `hello.txt` содержит `XYZ0123456789abcdefghij`
-(23 байта вместо 18).
+Демо-процессы работают как `uid=1000, gid=1000`; файлы initrd — `root:root`
+с режимом `0644` из tar. Поэтому `spawn w` на чистом файле **молча
+завершается**: grant на запись есть, но DAC не пускает. Перед ним нужен
+`chmod 666 hello.txt` из шелла. После успешного `spawn w` файл содержит
+`XYZ0123456789abcdefghij` (23 байта вместо 18).
+
+`spawn p` печатает по одной строке на проверку:
+
+```
+p1 0     access(R_OK)     — other r есть
+p2 -13   access(W_OK)     — EACCES
+p3 -13   access(X_OK)     — EACCES
+p4 -13   open(O_WRONLY)   — EACCES (DAC)
+p5 -1    chmod(0666)      — EPERM (не владелец)
+p6 -13   access(readme.txt) — EACCES (нет grant)
+```
+
+После `chmod 666 hello.txt` становятся `p2 0` и `p4 3` (fd). После
+`chmod 755 hello.txt` — `p3 0`, а `p2`/`p4` снова `-13`.
 
 `spawn r` открывает `hello.txt` и ждёт, повторяя `open`/`close`, пока
 повторный `open` не вернёт `ENOENT` (файл удалили). Затем читает через

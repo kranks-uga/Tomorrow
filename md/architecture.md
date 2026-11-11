@@ -335,7 +335,7 @@ Process {
 0xA8  kernel_stack
 ```
 
-### Process::new(pid, syscall_mask, domain, entry, grants)
+### Process::new(pid, syscall_mask, domain, entry, grants, uid, gid)
 
 ```
 1. pmm::alloc() → kernel_stack страница (физ.)
@@ -351,7 +351,8 @@ Process {
 10. Context.cs    = 0x23   (user code, DPL=3)
 11. Context.ss    = 0x1B   (user data, DPL=3)
 12. Context.cr3   = текущий CR3
-13. fds = [None; 3] (0/1/2 — консоль), grants — из аргумента
+13. fds = [None; 3] (0/1/2 — консоль), grants — из аргумента,
+    uid/gid — субъект для DAC-проверок (демо-процессы: 1000/1000)
 ```
 
 ---

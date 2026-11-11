@@ -72,8 +72,10 @@
 | initrd — загрузка модулей через GRUB | готово |
 | RAM FS (ramfs) — inode на `Arc`, создание и запись файлов | готово |
 | Файловые syscalls — fd-таблица процесса, open/read/close | готово |
+| Unix DAC `rwx` (`uid/gid/mode`) поверх capability grants | готово |
+| `access` / `chmod`, `ls -l`, `chmod` / `chown` в шелле | готово |
 | ACPI shutdown / reboot | готово |
-| Serial COM1 — boot-лог и паники в UART | готово |
+| Serial COM1 — boot-лог, паники и зеркало консоли в UART | готово |
 
 ### Команды шелла
 
@@ -84,11 +86,13 @@
 | `echo <текст>` | вывести текст |
 | `ticks` | показать счётчик таймерных тиков |
 | `ps` | список процессов |
-| `spawn <a\|b\|f\|w\|x\|r\|y>` | запустить демо-процесс (`f`/`w` читают и пишут `hello.txt`, `x` проверяет grants, `r` — unlink, `y` — yield) |
+| `spawn <a\|b\|f\|w\|x\|r\|y\|p>` | демо-процесс (`f`/`w` читают и пишут `hello.txt`, `x` проверяет grants, `p` — матрицу DAC `rwx`, `r` — unlink, `y` — yield) |
 | `kill <pid>` | завершить процесс |
 | `mem` | статистика памяти |
 | `module` | список загруженных модулей |
-| `ls` | содержимое RAM FS |
+| `ls [-l]` | содержимое RAM FS; `-l` — режим, uid, gid, размер |
+| `chmod <octal> <файл>` | сменить `rwx`-режим (например `chmod 666 hello.txt`) |
+| `chown <uid> <gid> <файл>` | сменить владельца |
 | `cat <файл>` | вывести файл |
 | `write <файл> <данные>` | записать данные в файл |
 | `touch <файл>` | создать пустой файл |
@@ -102,13 +106,17 @@
 |---|----------|----------|
 | 0 | `SYS_READ` | fd, buf, len — прочитать из файла, 0 = конец файла |
 | 1 | `SYS_WRITE` | fd, buf, len — fd 1 = консоль |
-| 2 | `SYS_OPEN` | path, len — открыть файл ramfs, возвращает fd |
+| 2 | `SYS_OPEN` | path, len, flags — открыть файл ramfs, возвращает fd |
 | 3 | `SYS_CLOSE` | fd — закрыть файл |
+| 21 | `SYS_ACCESS` | path, len, mode — проверить `R/W/X/F_OK` без открытия |
 | 24 | `SYS_YIELD` | уступить процессор |
 | 60 | `SYS_EXIT` | завершить процесс |
+| 90 | `SYS_CHMOD` | path, len, mode — сменить `rwx` (владелец или root) |
 
-Ошибки возвращаются как в Linux: отрицательное `-errno` (`EBADF`, `ENOENT`, `EFAULT`, …).
+Ошибки возвращаются как в Linux: отрицательное `-errno` (`EACCES`, `EPERM`, `EBADF`, `ENOENT`, `EFAULT`, …).
 Каждому процессу разрешён только набор syscalls из его маски (`syscall_mask`).
+Доступ к файлу требует **двух** разрешений: grant у процесса и Unix DAC
+`rwx` на inode; подробности — в [`md/syscalls.md`](md/syscalls.md).
 
 ---
 
@@ -191,8 +199,9 @@ src/
   hpet.rs          — HPET таймер
   tss.rs           — TSS + GDT
   process.rs       — структура процесса и контекста
+  perm.rs          — Unix DAC: проверка rwx, owner/group/other
   scheduler.rs     — round-robin планировщик
-  syscall.rs       — обработчик системных вызовов
+  syscall.rs       — обработчик системных вызовов (open/access/chmod)
   syscall_entry.s  — вход/выход SYSCALL (MSR)
   timer.s          — обработчик прерывания таймера, context switch
   switch.s         — resume_context (единый путь возврата в ring-3)
@@ -220,7 +229,7 @@ md/               — подробная документация подсист
 |----------|-------|
 | [`architecture.md`](md/architecture.md) | ядро целиком: загрузка, PMM/VMM/heap, IDT, APIC-таймер, TSS/GDT, процессы, планировщик, syscall |
 | [`xhci.md`](md/xhci.md) | USB-стек: xHCI-контроллер, перечисление устройств, хабы/TT, HID-клавиатура |
-| [`ramfs.md`](md/ramfs.md) | файловая система: initrd (tar) → heap, writable ramfs, команды `ls/cat/write/touch/rm` |
+| [`ramfs.md`](md/ramfs.md) | файловая система: initrd (tar) → heap, writable ramfs, метаданные inode, команды `ls/cat/write/touch/rm/chmod/chown` |
 | [`console.md`](md/console.md) | вывод на экран: framebuffer, рендер PSF2-шрифта, API `Console` |
 | [`shell.md`](md/shell.md) | ввод и шелл: клавиатура (PS/2 + USB), `on_char`, line discipline, диспетч команд |
 | [`serial.md`](md/serial.md) | COM1: инициализация UART, `sprint!`/`sprintln!`, boot-лог и паники, чтение лога |

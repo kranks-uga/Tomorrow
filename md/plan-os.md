@@ -20,7 +20,7 @@ Linux-бинарей. Детальный план файловой систем�
 | IDT / APIC / HPET / TSS | готово |
 | Процессы ring 3 | работают, НО: общий CR3, код = функции ядра (2 страницы, `WRITABLE\|USER`), virt-адреса с хаком `pid * шаг` (`Process::new`) |
 | Планировщик | round-robin, 64 слота; состояний «спит/ждёт» нет |
-| Syscalls | read / write / open / close / yield / exit; ошибки `-errno` как в Linux; права на файлы через grants (см. `syscalls.md`); `syscall_mask`, `domain`, `token` в `Process` |
+| Syscalls | read / write / open / close / access / chmod / yield / exit; ошибки `-errno` как в Linux; права на файлы: grants + Unix DAC `rwx` (см. `md/syscalls.md`); `syscall_mask`, `domain`, `token` в `Process` |
 | Консоль | framebuffer + PSF2; скролла нет — экран очищается целиком |
 | Шелл | команды, line discipline (program_output) |
 | USB / xHCI | работает на железе: хабы + TT, boot-клавиатура |
@@ -115,10 +115,14 @@ sys_open/read/write/close) → этап 4 (коалесценция и пр.).
 3. **G.3** SMEP/SMAP (биты CR4), если CPU умеет: ядро физически не может
    исполнять/читать user-страницы мимо copy_*_user. Дешёвая строчка,
    ловит целый класс багов ядра.
-4. **G.4** Оформить свою модель `syscall_mask`/`domain`/`token` (зачаток
-   уже в `Process`): документировать в md/, маска проверяется в диспетчере —
-   это самодельный seccomp; понадобится осмысленный набор доменов.
-5. **G.5** Далее по вкусу: guard page под user-стеком, ASLR (рандомный
+4. **G.4** Своя модель `syscall_mask`/`domain`/`token` (зачаток уже в
+   `Process`): маска проверяется в диспетчере (`syscall_allowed`) — это
+   самодельный seccomp; `domain`/`token` пока не используются. Осмысленный
+   набор доменов — следующий шаг.
+5. **G.5** Unix DAC `rwx` поверх grants: `Inode.uid/gid/mode`, `perm::allowed`,
+   `access(21)` и `chmod(90)`; root обходит DAC, но не grants. Готово, см.
+   `md/syscalls.md`. Проверка: `spawn p` на режимах `0644/0666/0755`.
+6. **G.6** Далее по вкусу: guard page под user-стеком, ASLR (рандомный
    сдвиг базы стека/кучи), stack canary в ядре.
 
 ## Трек I — Unix-семантика процессов (М3)
