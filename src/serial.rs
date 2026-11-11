@@ -90,6 +90,26 @@ fn emit_str(s: &str) {
     }
 }
 
+/// Неблокирующая запись одного байта. Используется зеркалированием консоли:
+/// вывод может идти из обработчика прерываний (эхо клавиатуры), поэтому
+/// ждать освобождения лока и пустоты THR нельзя. Не успели — теряем байт:
+/// это отладочный канал, а не буфер, который обязан быть полным.
+pub fn try_put_byte(b: u8) {
+    let Some(_guard) = LOCK.try_lock() else {
+        return;
+    };
+    unsafe {
+        if b == b'\n' {
+            if inb(COM1 + 5) & LSR_THR_EMPTY != 0 {
+                outb(COM1, b'\r');
+            }
+        }
+        if inb(COM1 + 5) & LSR_THR_EMPTY != 0 {
+            outb(COM1, b);
+        }
+    }
+}
+
 /// Неблокирующий вариант `_print` — для паники.
 pub fn try_print(args: fmt::Arguments) -> bool {
     match LOCK.try_lock() {

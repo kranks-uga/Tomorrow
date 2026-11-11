@@ -14,13 +14,14 @@ use alloc::vec::Vec;
 /// короче 4 КБ, но могут начинаться у конца страницы → нужно две.
 const CODE_PAGES: u64 = 2;
 
-// Права rw
-pub const PERM_READ: u8 = 1 << 0;
-pub const PERM_WRITE: u8 = 1 << 1;
+// Права rwx
+pub const PERM_EXEC: u16 = crate::perm::X; // 1
+pub const PERM_WRITE: u16 = crate::perm::W; // 2
+pub const PERM_READ: u16 = crate::perm::R; // 4
 
 pub struct Grant {
     pub name: String,
-    pub perms: u8,
+    pub perms: u16,
 }
 
 #[derive(PartialEq)]
@@ -32,9 +33,11 @@ pub enum ProcessState {
 
 pub struct Process {
     pub pid: u64,
-    pub syscall_mask: u64,
+    pub syscall_mask: u128,
     pub domain: u8,
     pub token: u64,
+    pub uid: u32,
+    pub gid: u32,
     pub state: ProcessState,
     pub kernel_stack: u64,
     pub user_regions: [(u64, u64); 2],
@@ -49,13 +52,21 @@ pub struct Process {
 }
 
 pub struct OpenFile {
-    pub perms: u8,
+    pub perms: u16,
     pub inode: Arc<Inode>,
     pub offset: usize,
 }
 
 impl Process {
-    pub fn new(pid: u64, syscall_mask: u64, domain: u8, entry: u64, grants: Vec<Grant>) -> Self {
+    pub fn new(
+        pid: u64,
+        syscall_mask: u128,
+        domain: u8,
+        entry: u64,
+        grants: Vec<Grant>,
+        uid: u32,
+        gid: u32,
+    ) -> Self {
         let stack = unsafe { pmm::alloc() };
         let user_stack_phys = unsafe { pmm::alloc() };
 
@@ -120,6 +131,8 @@ impl Process {
             syscall_mask,
             domain,
             token: 0,
+            uid,
+            gid,
             state: ProcessState::Running,
             kernel_stack: stack_top,
             kernel_stack_phys: stack,

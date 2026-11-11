@@ -10,8 +10,10 @@ pub const SYS_READ: u64 = 0;
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_OPEN: u64 = 2;
 pub const SYS_CLOSE: u64 = 3;
-pub const SYS_EXIT: u64 = 60;
+pub const SYS_ACCESS: u64 = 21;
 pub const SYS_YIELD: u64 = 24;
+pub const SYS_EXIT: u64 = 60;
+pub const SYS_CHMOD: u64 = 90;
 
 const O_RDONLY: u64 = 0;
 const O_WRONLY: u64 = 1;
@@ -19,12 +21,16 @@ const O_RDWR: u64 = 2;
 const O_ACCMODE: u64 = 3; // маска двух младших бит
 const EACCES: u64 = 13;
 
-pub const SYSCALL_MASK: u64 = (1 << SYS_READ)
-    | (1 << SYS_WRITE)
-    | (1 << SYS_OPEN)
-    | (1 << SYS_CLOSE)
-    | (1 << SYS_YIELD)
-    | (1 << SYS_EXIT);
+/// Битовая маска разрешённых syscall-ов. u128, а не u64: Linux-номер
+/// `chmod` = 90 не помещается в 64-битную маску.
+pub const SYSCALL_MASK: u128 = (1u128 << SYS_READ)
+    | (1u128 << SYS_WRITE)
+    | (1u128 << SYS_OPEN)
+    | (1u128 << SYS_CLOSE)
+    | (1u128 << SYS_ACCESS)
+    | (1u128 << SYS_YIELD)
+    | (1u128 << SYS_EXIT)
+    | (1u128 << SYS_CHMOD);
 
 /// Вершина ядерного стека для syscall-обработчика.
 /// Экспортируется в syscall_entry.s через #[no_mangle].
@@ -177,7 +183,14 @@ pub fn init() {
 fn syscall_exists(nr: u64) -> bool {
     matches!(
         nr,
-        SYS_READ | SYS_WRITE | SYS_OPEN | SYS_CLOSE | SYS_EXIT | SYS_YIELD
+        SYS_READ
+            | SYS_WRITE
+            | SYS_OPEN
+            | SYS_CLOSE
+            | SYS_ACCESS
+            | SYS_YIELD
+            | SYS_EXIT
+            | SYS_CHMOD
     )
 }
 
@@ -204,8 +217,10 @@ pub unsafe extern "C" fn syscall_handler(
         SYS_READ => sys_read(arg1, arg2, arg3),
         SYS_OPEN => sys_open(arg1, arg2, arg3),
         SYS_CLOSE => sys_close(arg1),
+        SYS_ACCESS => sys_access(arg1, arg2, arg3),
         SYS_EXIT => sys_exit(arg1),
         SYS_YIELD => sys_yield(),
+        SYS_CHMOD => sys_chmod(arg1, arg2, arg3),
         _ => err(ENOSYS),
     }
 }
@@ -223,12 +238,37 @@ fn user_range_ok(p: &Process, ptr: u64, len: u64) -> bool {
     false
 }
 
+/// Скопировать путь из user-памяти в буфер ядра.
+///
+/// Все проверки длины/диапазона собраны в одном месте, чтобы open/access/chmod
+/// не расходились в том, какие указатели они считают допустимыми.
+unsafe fn user_path(
+    p: &Process,
+    ptr: u64,
+    len: u64,
+) -> Result<[u8; crate::ramfs::MAX_PATH], u64> {
+    if len == 0 {
+        return Err(err(EINVAL));
+    }
+    if len > crate::ramfs::MAX_PATH as u64 {
+        return Err(err(ENAMETOOLONG));
+    }
+    if !user_range_ok(p, ptr, len) {
+        return Err(err(EFAULT));
+    }
+
+    let src = core::slice::from_raw_parts(ptr as *const u8, len as usize);
+    let mut buf = [0u8; crate::ramfs::MAX_PATH];
+    buf[..src.len()].copy_from_slice(src);
+    Ok(buf)
+}
+
 /// Проверяет `Process::syscall_mask` текущего процесса — бит `nr` должен быть
 /// установлен, иначе syscall запрещён. Маска заполняется при создании
 /// процесса (см. process.rs), но раньше ничем не проверялась.
 unsafe fn syscall_allowed(nr: u64) -> bool {
     match &scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current] {
-        Some(p) if nr < 64 => (p.syscall_mask >> nr) & 1 != 0,
+        Some(p) if nr < 128 => (p.syscall_mask >> nr) & 1 != 0,
         _ => false,
     }
 }
@@ -280,30 +320,21 @@ unsafe fn sys_open(path_ptr: u64, path_len: u64, flags: u64) -> u64 {
     if flags & !O_ACCMODE != 0 {
         return err(EINVAL);
     }
-    let need: u8 = match flags & O_ACCMODE {
+    let need: u16 = match flags & O_ACCMODE {
         O_RDONLY => PERM_READ,
         O_WRONLY => PERM_WRITE,
         O_RDWR => PERM_READ | PERM_WRITE,
         _ => return err(EINVAL),
     };
-    if path_len == 0 {
-        return err(EINVAL);
-    }
-    if path_len > crate::ramfs::MAX_PATH as u64 {
-        return err(ENAMETOOLONG);
-    }
 
-    if !user_range_ok(p, path_ptr, path_len) {
-        return err(EFAULT);
-    }
-
-    let src = core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize);
-    let mut name_buf = [0u8; crate::ramfs::MAX_PATH];
-    name_buf[..src.len()].copy_from_slice(src);
-    let name = &name_buf[..src.len()];
+    let name_buf = match user_path(p, path_ptr, path_len) {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let name = &name_buf[..path_len as usize];
 
     // Grant проверяется ДО lookup: иначе по ENOENT/EACCES процесс без прав
-    // мог бы узнать, какие файлы существуют. Берём perms (u8, Copy), а не &Grant,
+    // мог бы узнать, какие файлы существуют. Берём perms (u16, Copy), а не &Grant,
     // чтобы не держать заимствование p.grants при push в p.fds.
     let granted = p
         .grants
@@ -317,6 +348,20 @@ unsafe fn sys_open(path_ptr: u64, path_len: u64, flags: u64) -> u64 {
     let Some(inode) = crate::ramfs::lookup(name) else {
         return err(ENOENT);
     };
+
+    // DAC: grant разрешает процессу «назвать» файл, но не отменяет rwx.
+    // Проверка идёт после lookup — существование уже не секрет, grant пройден.
+    if !crate::perm::allowed(
+        inode.mode(),
+        inode.uid(),
+        inode.gid(),
+        p.uid,
+        p.gid,
+        need,
+    ) {
+        return err(EACCES);
+    }
+
     let file = OpenFile {
         inode,
         offset: 0,
@@ -333,6 +378,89 @@ unsafe fn sys_open(path_ptr: u64, path_len: u64, flags: u64) -> u64 {
     }
     p.fds.push(Some(file));
     (p.fds.len() - 1) as u64
+}
+
+/// access(path, len, mode) — проверить права, не открывая файл.
+///
+/// `mode`: R_OK=4, W_OK=2, X_OK=1, F_OK=0 — как в Linux. Это единственное
+/// место, где сейчас реально проверяется бит `x` (exec появится в треке C).
+unsafe fn sys_access(path_ptr: u64, path_len: u64, mode: u64) -> u64 {
+    if mode & !0o7 != 0 {
+        return err(EINVAL);
+    }
+    let need = mode as u16;
+
+    let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() else {
+        return err(ESRCH);
+    };
+    let name_buf = match user_path(p, path_ptr, path_len) {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let name = &name_buf[..path_len as usize];
+
+    // Capability-слой. F_OK (need == 0) тоже требует grant: иначе процесс
+    // мог бы перебирать имена и узнавать, какие файлы существуют.
+    let granted = p
+        .grants
+        .iter()
+        .find(|g| g.name.as_bytes() == name)
+        .map_or(0, |g| g.perms);
+    if granted == 0 || granted & need != need {
+        return err(EACCES);
+    }
+
+    let Some(inode) = crate::ramfs::lookup(name) else {
+        return err(ENOENT);
+    };
+    if !crate::perm::allowed(
+        inode.mode(),
+        inode.uid(),
+        inode.gid(),
+        p.uid,
+        p.gid,
+        need,
+    ) {
+        return err(EACCES);
+    }
+    0
+}
+
+/// chmod(path, len, mode) — сменить rwx-режим. Менять может владелец или root.
+unsafe fn sys_chmod(path_ptr: u64, path_len: u64, mode: u64) -> u64 {
+    if mode & !0o777 != 0 {
+        return err(EINVAL);
+    }
+
+    let Some(p) = scheduler::SCHEDULER.processes[scheduler::SCHEDULER.current].as_mut() else {
+        return err(ESRCH);
+    };
+    let name_buf = match user_path(p, path_ptr, path_len) {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let name = &name_buf[..path_len as usize];
+
+    // Сначала grant (любой): без него процесс не должен даже узнать,
+    // существует ли файл. Потом lookup и проверка владельца.
+    let granted = p
+        .grants
+        .iter()
+        .find(|g| g.name.as_bytes() == name)
+        .map_or(0, |g| g.perms);
+    if granted == 0 {
+        return err(EACCES);
+    }
+
+    let Some(inode) = crate::ramfs::lookup(name) else {
+        return err(ENOENT);
+    };
+    if p.uid != 0 && p.uid != inode.uid() {
+        return err(EPERM);
+    }
+
+    inode.set_mode(mode as u16);
+    0
 }
 
 unsafe fn sys_read(fd: u64, buf: u64, len: u64) -> u64 {

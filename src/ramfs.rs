@@ -53,7 +53,7 @@ impl Inode {
             data: Mutex::new(data),
             uid: AtomicU32::new(uid),
             gid: AtomicU32::new(gid),
-            mode: AtomicU16::new(mode),
+            mode: AtomicU16::new(mode & crate::perm::MODE_MASK),
         }
     }
 
@@ -146,7 +146,7 @@ pub fn lookup(name: &[u8]) -> Option<Arc<Inode>> {
 /// Перебрать файлы (для ls). Сначала клонируем список (имя + Arc) и
 /// отпускаем ROOT, потом уже лочим data каждого inode по отдельности —
 /// тот же порядок локов, что и в lookup.
-pub fn list(mut cb: impl FnMut(&[u8], usize)) {
+pub fn list(mut cb: impl FnMut(&[u8], usize, u32, u32, u16)) {
     let entries: Vec<(String, Arc<Inode>)> = ROOT
         .lock()
         .iter()
@@ -155,7 +155,13 @@ pub fn list(mut cb: impl FnMut(&[u8], usize)) {
 
     for (name, inode) in &entries {
         let len = inode.data.lock().len();
-        cb(name.as_bytes(), len);
+        cb(
+            name.as_bytes(),
+            len,
+            inode.uid(),
+            inode.gid(),
+            inode.mode(),
+        );
     }
 }
 

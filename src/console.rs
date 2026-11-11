@@ -1,5 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use crate::font::{draw_char, GLYPH_H, GLYPH_W};
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// Дублировать ли экран в COM1. Включается шеллом: boot-лог уже пишется
+/// в serial через `bootlog!`, и зеркалирование с загрузки дало бы дубли.
+/// Нужно для headless-демонстрации: `-serial file:...` показывает ровно то,
+/// что видно на экране.
+static MIRROR_SERIAL: AtomicBool = AtomicBool::new(false);
+
+pub fn enable_serial_mirror() {
+    MIRROR_SERIAL.store(true, Ordering::Relaxed);
+}
 
 pub struct Console {
     pub fb: *mut u32,
@@ -14,6 +25,9 @@ unsafe impl Send for Console {}
 
 impl Console {
     pub fn write_byte(&mut self, b: u8) {
+        if MIRROR_SERIAL.load(Ordering::Relaxed) {
+            crate::serial::try_put_byte(b);
+        }
         let max_rows = self.height / GLYPH_H;
         match b {
             b'\n' => {

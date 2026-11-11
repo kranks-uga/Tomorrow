@@ -601,6 +601,133 @@ pub extern "C" fn process_r() -> ! {
     )
 }
 
+#[unsafe(naked)]
+pub extern "C" fn process_p() -> ! {
+    // Демонстрация DAC. Процесс uid=1000, hello.txt принадлежит root:root
+    // с режимом 0644 из tar. Печатает "<pN> <signed result>".
+    //
+    // Ожидаемо на чистом hello.txt:
+    //   p1  0    access(R_OK) — other r есть
+    //   p2 -13   access(W_OK) — other w нет
+    //   p3 -13   access(X_OK) — other x нет
+    //   p4 -13   open(O_WRONLY) — DAC запретил
+    //   p5  -1   chmod(0666) — EPERM, не владелец
+    //   p6 -13   access(readme.txt) — нет grant (capability-слой)
+    //
+    // После `chmod 666 hello.txt` из шелла: p2=0, p4=3 (fd).
+    // После `chmod 755 hello.txt`: p3=0, p2/p4 снова -13.
+    core::arch::naked_asm!(
+        // p1: access(hello.txt, R_OK)
+        "mov rax, 21",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 4",
+        "syscall",
+        "lea r13, [rip + 31f]",
+        "call 9f",
+        // p2: access(hello.txt, W_OK)
+        "mov rax, 21",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 2",
+        "syscall",
+        "lea r13, [rip + 32f]",
+        "call 9f",
+        // p3: access(hello.txt, X_OK)
+        "mov rax, 21",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 1",
+        "syscall",
+        "lea r13, [rip + 33f]",
+        "call 9f",
+        // p4: open(hello.txt, O_WRONLY)
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 1",
+        "syscall",
+        "lea r13, [rip + 34f]",
+        "call 9f",
+        // p5: chmod(hello.txt, 0666) = 438
+        "mov rax, 90",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 438",
+        "syscall",
+        "lea r13, [rip + 35f]",
+        "call 9f",
+        // p6: access(readme.txt, R_OK) — файла нет в grants
+        "mov rax, 21",
+        "lea rdi, [rip + 2f]",
+        "mov rsi, 10",
+        "mov rdx, 4",
+        "syscall",
+        "lea r13, [rip + 36f]",
+        "call 9f",
+        // exit(0)
+        "mov rax, 60",
+        "xor rdi, rdi",
+        "syscall",
+        "3: jmp 3b",
+        // report: r13 = prefix (3 байта), rax = результат.
+        // Собирает "<prefix><signed decimal>\n" в стеке и печатает ОДНИМ
+        // write: иначе шелл перерисовывает приглашение после каждой части
+        // строки и вывод превращается в "p1 User@Tomorrow> 0".
+        "9:",
+        "mov r14, rax",
+        "sub rsp, 32",
+        // '\n' в конец, цифры — назад от него.
+        "lea rsi, [rsp + 32]",
+        "dec rsi",
+        "mov byte ptr [rsi], 10",
+        "mov rax, r14",
+        "test rax, rax",
+        "jns 15f",
+        "neg rax",
+        "15:",
+        "mov rcx, 10",
+        "16:",
+        "xor edx, edx",
+        "div rcx",
+        "add dl, 48",
+        "dec rsi",
+        "mov [rsi], dl",
+        "test rax, rax",
+        "jnz 16b",
+        "test r14, r14",
+        "jns 17f",
+        "dec rsi",
+        "mov byte ptr [rsi], 45",
+        "17:",
+        // Префикс из 3 байт — перед числом (в обратном порядке).
+        "dec rsi",
+        "mov al, [r13 + 2]",
+        "mov [rsi], al",
+        "dec rsi",
+        "mov al, [r13 + 1]",
+        "mov [rsi], al",
+        "dec rsi",
+        "mov al, [r13]",
+        "mov [rsi], al",
+        "lea rdx, [rsp + 32]",
+        "sub rdx, rsi",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "syscall",
+        "add rsp, 32",
+        "ret",
+        "1: .ascii \"hello.txt\"",
+        "2: .ascii \"readme.txt\"",
+        "31: .ascii \"p1 \"",
+        "32: .ascii \"p2 \"",
+        "33: .ascii \"p3 \"",
+        "34: .ascii \"p4 \"",
+        "35: .ascii \"p5 \"",
+        "36: .ascii \"p6 \"",
+    )
+}
+
 #[no_mangle]
 pub extern "C" fn kernel_main(boot_info: u64) -> ! {
     // UART поднимаем до всего остального: дальше каждое веховое сообщение
@@ -833,6 +960,8 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             0,
             process_a as *const () as u64,
             Vec::new(),
+            1000,
+            1000,
         );
         let proc_b = process::Process::new(
             2,
@@ -840,6 +969,8 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             0,
             process_b as *const () as u64,
             Vec::new(),
+            1000,
+            1000,
         );
         (&raw mut scheduler::SCHEDULER)
             .as_mut()
