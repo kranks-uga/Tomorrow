@@ -2,6 +2,7 @@
 use crate::shell::parse_octal;
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::cmp::min;
+use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use spin::Mutex;
 
 pub const MAX_PATH: usize = 100;
@@ -12,6 +13,9 @@ pub const MAX_FILE_SIZE: usize = 64 * 1024;
 
 pub struct Inode {
     pub data: Mutex<Vec<u8>>,
+    uid: AtomicU32,
+    gid: AtomicU32,
+    mode: AtomicU16,
 }
 
 impl Inode {
@@ -43,6 +47,37 @@ impl Inode {
         dst[..n].copy_from_slice(&data[offset..offset + n]);
         n
     }
+
+    pub fn new(data: Vec<u8>, uid: u32, gid: u32, mode: u16) -> Self {
+        Self {
+            data: Mutex::new(data),
+            uid: AtomicU32::new(uid),
+            gid: AtomicU32::new(gid),
+            mode: AtomicU16::new(mode & crate::perm::MODE_MASK),
+        }
+    }
+
+    pub fn uid(&self) -> u32 {
+        self.uid.load(Ordering::Relaxed)
+    }
+
+    pub fn gid(&self) -> u32 {
+        self.gid.load(Ordering::Relaxed)
+    }
+
+    pub fn mode(&self) -> u16 {
+        self.mode.load(Ordering::Relaxed)
+    }
+
+    pub fn set_mode(&self, mode: u16) {
+        self.mode
+            .store(mode & crate::perm::MODE_MASK, Ordering::Relaxed);
+    }
+
+    pub fn set_owner(&self, uid: u32, gid: u32) {
+        self.uid.store(uid, Ordering::Relaxed);
+        self.gid.store(gid, Ordering::Relaxed);
+    }
 }
 
 struct DirEntry {
@@ -62,6 +97,11 @@ pub fn init() {
         if name0 == 0 {
             break; // пустое имя = конец архива
         }
+
+        let mode = match (parse_octal(base, off + 100, 8) as u16) & crate::perm::MODE_MASK {
+            0 => 0o644,
+            m => m,
+        };
 
         // --- имя: внутренний цикл ---
         let mut name_buf = [0u8; 100];
@@ -85,9 +125,7 @@ pub fn init() {
 
         ROOT.lock().push(DirEntry {
             name,
-            inode: Arc::new(Inode {
-                data: Mutex::new(data),
-            }),
+            inode: Arc::new(Inode::new(data, 0, 0, mode)),
         });
 
         // --- переход к следующему header ---
@@ -108,7 +146,7 @@ pub fn lookup(name: &[u8]) -> Option<Arc<Inode>> {
 /// Перебрать файлы (для ls). Сначала клонируем список (имя + Arc) и
 /// отпускаем ROOT, потом уже лочим data каждого inode по отдельности —
 /// тот же порядок локов, что и в lookup.
-pub fn list(mut cb: impl FnMut(&[u8], usize)) {
+pub fn list(mut cb: impl FnMut(&[u8], usize, u32, u32, u16)) {
     let entries: Vec<(String, Arc<Inode>)> = ROOT
         .lock()
         .iter()
@@ -117,7 +155,13 @@ pub fn list(mut cb: impl FnMut(&[u8], usize)) {
 
     for (name, inode) in &entries {
         let len = inode.data.lock().len();
-        cb(name.as_bytes(), len);
+        cb(
+            name.as_bytes(),
+            len,
+            inode.uid(),
+            inode.gid(),
+            inode.mode(),
+        );
     }
 }
 
@@ -133,16 +177,14 @@ pub fn write(name: &[u8], data: &[u8]) -> bool {
     }
 }
 
-pub fn create(name: &[u8]) -> bool {
+pub fn create(name: &[u8], uid: u32, gid: u32, mode: u16) -> bool {
     let mut root = ROOT.lock();
     if root.iter().any(|entry| entry.name.as_bytes() == name) {
         return false;
     }
     root.push(DirEntry {
         name: String::from_utf8_lossy(name).into_owned(),
-        inode: Arc::new(Inode {
-            data: Mutex::new(Vec::new()),
-        }),
+        inode: Arc::new(Inode::new(Vec::new(), uid, gid, mode)),
     });
     true
 }
@@ -152,6 +194,26 @@ pub fn delete(name: &[u8]) -> bool {
     match root.iter().position(|entry| entry.name.as_bytes() == name) {
         Some(i) => {
             root.remove(i);
+            true
+        }
+        None => false,
+    }
+}
+
+pub fn set_mode(name: &[u8], mode: u16) -> bool {
+    match lookup(name) {
+        Some(inode) => {
+            inode.set_mode(mode);
+            true
+        }
+        None => false,
+    }
+}
+
+pub fn set_owner(name: &[u8], uid: u32, gid: u32) -> bool {
+    match lookup(name) {
+        Some(inode) => {
+            inode.set_owner(uid, gid);
             true
         }
         None => false,

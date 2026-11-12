@@ -20,11 +20,13 @@ mod ioapic;
 mod keyboard;
 mod lapic;
 mod pci;
+mod perm;
 mod pic;
 mod pmm;
 mod process;
 mod ramfs;
 mod scheduler;
+mod serial;
 mod shell;
 mod syscall;
 mod tss;
@@ -47,6 +49,17 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
                 console.write_dec(loc.line() as u64);
             }
             console.write_byte(b'\n');
+        }
+    }
+    // Дублируем в UART: если консоль залипла или экран не виден, паника
+    // всё равно останется в serial-логе. try_* — паника не должна встать
+    // в дедлок на локе, который сама же и держала.
+    match info.location() {
+        Some(loc) => {
+            crate::serial::try_print(format_args!("\nPANIC at {}:{}\n", loc.file(), loc.line()));
+        }
+        None => {
+            crate::serial::try_print(format_args!("\nPANIC\n"));
         }
     }
     loop {}
@@ -148,6 +161,16 @@ macro_rules! kprint {
                 .write_str($s);
         }
     };
+}
+
+/// Boot-сообщение сразу в две стороны: на экран и в serial. Только для
+/// загрузки — в обработчике прерываний serial-лок брать нельзя.
+#[macro_export]
+macro_rules! bootlog {
+    ($s:expr) => {{
+        $crate::kprint!($s);
+        $crate::sprint!($s);
+    }};
 }
 
 #[macro_export]
@@ -291,6 +314,35 @@ pub extern "C" fn process_b() -> ! {
         "syscall",
         "0: jmp 0b",
         "1: .byte 0x42, 0x0A",
+    )
+}
+
+#[unsafe(naked)]
+pub extern "C" fn process_y() -> ! {
+    // Тест yield: счётчик в rbx (callee-saved) обязан пережить переключение.
+    core::arch::naked_asm!(
+        "mov rbx, 5",
+        "2:",
+        "lea rsi, [rip + 1f]",
+        "mov rax, 1", // write(1, "Y\n", 2)
+        "mov rdi, 1",
+        "mov rdx, 2",
+        "syscall",
+        "mov rax, 24", // yield
+        "syscall",
+        "dec rbx",
+        "jnz 2b",
+        "lea rsi, [rip + 3f]",
+        "mov rax, 1", // write(1, "y done\n", 7)
+        "mov rdi, 1",
+        "mov rdx, 7",
+        "syscall",
+        "mov rax, 60", // exit(0)
+        "xor rdi, rdi",
+        "syscall",
+        "4: jmp 4b",
+        "1: .byte 0x59, 0x0A",                               // "Y\n"
+        "3: .byte 0x79, 0x20, 0x64, 0x6f, 0x6e, 0x65, 0x0A", // "y done\n"
     )
 }
 
@@ -549,8 +601,140 @@ pub extern "C" fn process_r() -> ! {
     )
 }
 
+#[unsafe(naked)]
+pub extern "C" fn process_p() -> ! {
+    // Демонстрация DAC. Процесс uid=1000, hello.txt принадлежит root:root
+    // с режимом 0644 из tar. Печатает "<pN> <signed result>".
+    //
+    // Ожидаемо на чистом hello.txt:
+    //   p1  0    access(R_OK) — other r есть
+    //   p2 -13   access(W_OK) — other w нет
+    //   p3 -13   access(X_OK) — other x нет
+    //   p4 -13   open(O_WRONLY) — DAC запретил
+    //   p5  -1   chmod(0666) — EPERM, не владелец
+    //   p6 -13   access(readme.txt) — нет grant (capability-слой)
+    //
+    // После `chmod 666 hello.txt` из шелла: p2=0, p4=3 (fd).
+    // После `chmod 755 hello.txt`: p3=0, p2/p4 снова -13.
+    core::arch::naked_asm!(
+        // p1: access(hello.txt, R_OK)
+        "mov rax, 21",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 4",
+        "syscall",
+        "lea r13, [rip + 31f]",
+        "call 9f",
+        // p2: access(hello.txt, W_OK)
+        "mov rax, 21",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 2",
+        "syscall",
+        "lea r13, [rip + 32f]",
+        "call 9f",
+        // p3: access(hello.txt, X_OK)
+        "mov rax, 21",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 1",
+        "syscall",
+        "lea r13, [rip + 33f]",
+        "call 9f",
+        // p4: open(hello.txt, O_WRONLY)
+        "mov rax, 2",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 1",
+        "syscall",
+        "lea r13, [rip + 34f]",
+        "call 9f",
+        // p5: chmod(hello.txt, 0666) = 438
+        "mov rax, 90",
+        "lea rdi, [rip + 1f]",
+        "mov rsi, 9",
+        "mov rdx, 438",
+        "syscall",
+        "lea r13, [rip + 35f]",
+        "call 9f",
+        // p6: access(readme.txt, R_OK) — файла нет в grants
+        "mov rax, 21",
+        "lea rdi, [rip + 2f]",
+        "mov rsi, 10",
+        "mov rdx, 4",
+        "syscall",
+        "lea r13, [rip + 36f]",
+        "call 9f",
+        // exit(0)
+        "mov rax, 60",
+        "xor rdi, rdi",
+        "syscall",
+        "3: jmp 3b",
+        // report: r13 = prefix (3 байта), rax = результат.
+        // Собирает "<prefix><signed decimal>\n" в стеке и печатает ОДНИМ
+        // write: иначе шелл перерисовывает приглашение после каждой части
+        // строки и вывод превращается в "p1 User@Tomorrow> 0".
+        "9:",
+        "mov r14, rax",
+        "sub rsp, 32",
+        // '\n' в конец, цифры — назад от него.
+        "lea rsi, [rsp + 32]",
+        "dec rsi",
+        "mov byte ptr [rsi], 10",
+        "mov rax, r14",
+        "test rax, rax",
+        "jns 15f",
+        "neg rax",
+        "15:",
+        "mov rcx, 10",
+        "16:",
+        "xor edx, edx",
+        "div rcx",
+        "add dl, 48",
+        "dec rsi",
+        "mov [rsi], dl",
+        "test rax, rax",
+        "jnz 16b",
+        "test r14, r14",
+        "jns 17f",
+        "dec rsi",
+        "mov byte ptr [rsi], 45",
+        "17:",
+        // Префикс из 3 байт — перед числом (в обратном порядке).
+        "dec rsi",
+        "mov al, [r13 + 2]",
+        "mov [rsi], al",
+        "dec rsi",
+        "mov al, [r13 + 1]",
+        "mov [rsi], al",
+        "dec rsi",
+        "mov al, [r13]",
+        "mov [rsi], al",
+        "lea rdx, [rsp + 32]",
+        "sub rdx, rsi",
+        "mov rax, 1",
+        "mov rdi, 1",
+        "syscall",
+        "add rsp, 32",
+        "ret",
+        "1: .ascii \"hello.txt\"",
+        "2: .ascii \"readme.txt\"",
+        "31: .ascii \"p1 \"",
+        "32: .ascii \"p2 \"",
+        "33: .ascii \"p3 \"",
+        "34: .ascii \"p4 \"",
+        "35: .ascii \"p5 \"",
+        "36: .ascii \"p6 \"",
+    )
+}
+
 #[no_mangle]
 pub extern "C" fn kernel_main(boot_info: u64) -> ! {
+    // UART поднимаем до всего остального: дальше каждое веховое сообщение
+    // дублируется в serial (bootlog!), и падение на любом этапе будет видно.
+    serial::init();
+    sprintln!("\n--- Tomorrow OS serial log ---");
+
     let mut xsdt_addr: u64 = 0;
     let mut mmap_addr: u64 = 0;
     let mut mmap_size: u32 = 0;
@@ -592,16 +776,16 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                         .unwrap()
                         .clear();
                 }
-                kprint!("Tomorrow OS\n");
+                bootlog!("Tomorrow OS\n");
                 idt::init();
-                kprint!("IDT ok\n");
+                bootlog!("IDT ok\n");
                 idt::set_handler(0xFF, idt::spurious_handler as *const () as u64);
                 idt::set_handler(0x20, idt::timer_handler_asm as *const () as u64);
                 idt::set_handler(0x21, idt::keyboard_handler_asm as *const () as u64);
                 idt::set_handler(0x0D, idt::gp_handler_asm as *const () as u64);
                 idt::set_handler(0x0E, idt::pf_handler_asm as *const () as u64);
                 pic::disable();
-                kprint!("PIC off\n");
+                bootlog!("PIC off\n");
             }
             15 => {
                 let rsdp = unsafe { &*((ptr as *const u8).add(8) as *const Rsdp) };
@@ -622,35 +806,40 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             MOD_END = mod_end;
         }
     }
-    kprint!("PMM ok\n");
+    bootlog!("PMM ok\n");
 
     // === TSS ===
     let kernel_stack = unsafe { pmm::alloc() + 4096 }; // +4096 — стек растёт вниз
     unsafe {
         tss::init(kernel_stack);
     }
-    kprint!("TSS ok\n");
+    bootlog!("TSS ok\n");
 
     kprint!("module: start=");
     write_hex!(mod_start);
     kprint!(" size=");
     crate::write_hex!(mod_end - mod_start); // или write_dec, если есть макрос
     kprint!("\n");
+    sprintln!(
+        "module: start={:#x} size={:#x}",
+        mod_start,
+        mod_end - mod_start
+    );
 
     // === HEAP ===
     let heap_start = unsafe { pmm::alloc_pages(256) }; // 256 страниц = 1 MB
     heap::HEAP.init(heap_start, 256 * 4096);
     heap::self_test();
-    kprint!("HEAP ok\n");
+    bootlog!("HEAP ok\n");
     ramfs::init();
 
     // === VMM ===
     // Identity map из boot.s покрывает всю физическую память — доп. маппинг не нужен
-    kprint!("VMM ok\n");
+    bootlog!("VMM ok\n");
 
     // === SYSCALL ===
     syscall::init();
-    kprint!("Syscall ok\n");
+    bootlog!("Syscall ok\n");
 
     // === ACPI ===
     let mut xhci_bar_phys: Option<u64> = None;
@@ -675,7 +864,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 unsafe {
                     core::arch::asm!("sti");
                 }
-                kprint!("APIC ok\n");
+                bootlog!("APIC ok\n");
             }
         }
 
@@ -690,6 +879,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 kprint!("MCFG: ");
                 write_hex!(mcfg_base);
                 kprint!("\n");
+                sprintln!("MCFG: {:#x}", mcfg_base);
                 unsafe { pci::enumerate(mcfg_base) };
                 xhci_bar_phys = unsafe { pci::find_xhci(mcfg_base) };
             }
@@ -702,6 +892,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                 kprint!("PM1a_CNT: ");
                 write_hex!(pm1a_cnt as u64);
                 kprint!("\n");
+                sprintln!("PM1a_CNT: {:#x}", pm1a_cnt);
 
                 // сохранить в статики для команды shutdown
                 unsafe {
@@ -719,8 +910,9 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
                     kprint!("SLP_TYPa: ");
                     write_hex!(a as u64);
                     kprint!("\n");
+                    sprintln!("SLP_TYPa: {:#x} SLP_TYPb: {:#x}", a, b);
                 } else {
-                    kprint!("_S5 not found\n");
+                    bootlog!("_S5 not found\n");
                 }
             }
 
@@ -752,11 +944,12 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
         kprint!("xhci bar: ");
         write_hex!(bar_phys);
         kprint!("\n");
+        sprintln!("xhci bar: {:#x}", bar_phys);
         unsafe {
             xhci::init(bar_phys);
         }
     } else {
-        kprint!("xhci not found\n");
+        bootlog!("xhci not found\n");
     }
 
     // === Scheduler ===
@@ -767,6 +960,8 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             0,
             process_a as *const () as u64,
             Vec::new(),
+            1000,
+            1000,
         );
         let proc_b = process::Process::new(
             2,
@@ -774,6 +969,8 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             0,
             process_b as *const () as u64,
             Vec::new(),
+            1000,
+            1000,
         );
         (&raw mut scheduler::SCHEDULER)
             .as_mut()
@@ -784,7 +981,7 @@ pub extern "C" fn kernel_main(boot_info: u64) -> ! {
             .unwrap()
             .add_process(proc_b);
     }
-    kprint!("Scheduler ok\n");
+    bootlog!("Scheduler ok\n");
     unsafe {
         // CLI до SCHEDULER_READY: если таймер сработает между READY=true и
         // первым iretq, он сохранит ядровый RIP в context.rip proc_a и
@@ -858,6 +1055,7 @@ fn parse_madt(addr: u64) -> u64 {
     kprint!("Local APIC: ");
     write_hex!(local_apic_address as u64);
     kprint!("\n");
+    sprintln!("Local APIC: {:#x}", local_apic_address);
 
     let mut offset: u64 = 36 + 8;
     while offset < length as u64 {
@@ -874,6 +1072,7 @@ fn parse_madt(addr: u64) -> u64 {
                 kprint!(" flags=");
                 write_hex!(flags as u64);
                 kprint!("\n");
+                sprintln!("CPU apic_id={:#x} flags={:#x}", apic_id, flags);
             }
             1 => {
                 let e = unsafe { &*(entry_ptr.add(2) as *const MadtIoApic) };

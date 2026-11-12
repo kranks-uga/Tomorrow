@@ -20,10 +20,11 @@ Linux-бинарей. Детальный план файловой систем�
 | IDT / APIC / HPET / TSS | готово |
 | Процессы ring 3 | работают, НО: общий CR3, код = функции ядра (2 страницы, `WRITABLE\|USER`), virt-адреса с хаком `pid * шаг` (`Process::new`) |
 | Планировщик | round-robin, 64 слота; состояний «спит/ждёт» нет |
-| Syscalls | read / write / open / close / yield / exit; ошибки `-errno` как в Linux; права на файлы через grants (см. `syscalls.md`); `syscall_mask`, `domain`, `token` в `Process` |
+| Syscalls | read / write / open / close / access / chmod / yield / exit; ошибки `-errno` как в Linux; права на файлы: grants + Unix DAC `rwx` (см. `md/syscalls.md`); `syscall_mask`, `domain`, `token` в `Process` |
 | Консоль | framebuffer + PSF2; скролла нет — экран очищается целиком |
 | Шелл | команды, line discipline (program_output) |
 | USB / xHCI | работает на железе: хабы + TT, boot-клавиатура |
+| Serial COM1 | готово: TX 115200 8N1, boot-лог и паники в UART (`md/serial.md`) |
 | ramfs | writable, `Mutex<Vec<File>>` — переделка по `plan-fs.md` |
 
 Архитектурные долги, из которых вырастает план:
@@ -56,6 +57,10 @@ sys_open/read/write/close) → этап 4 (коалесценция и пр.).
 ## Трек B — Блокирующий ввод и состояния планировщика
 
 Цель: процесс умеет ждать событие, не сжигая CPU.
+
+Предусловие сделано (октябрь 2026): `yield` больше не роняет ядро —
+переключение отложено до возврата из обработчика, все пути возврата в ring-3
+идут через `resume_context`. Проверка: `spawn y` (см. `syscalls.md`).
 
 1. **B.1** `ProcessState::Blocked(причина)`; schedule() пропускает
    заблокированных. Проверка: Blocked не получает кванты, после Unblock — получает.
@@ -110,10 +115,14 @@ sys_open/read/write/close) → этап 4 (коалесценция и пр.).
 3. **G.3** SMEP/SMAP (биты CR4), если CPU умеет: ядро физически не может
    исполнять/читать user-страницы мимо copy_*_user. Дешёвая строчка,
    ловит целый класс багов ядра.
-4. **G.4** Оформить свою модель `syscall_mask`/`domain`/`token` (зачаток
-   уже в `Process`): документировать в md/, маска проверяется в диспетчере —
-   это самодельный seccomp; понадобится осмысленный набор доменов.
-5. **G.5** Далее по вкусу: guard page под user-стеком, ASLR (рандомный
+4. **G.4** Своя модель `syscall_mask`/`domain`/`token` (зачаток уже в
+   `Process`): маска проверяется в диспетчере (`syscall_allowed`) — это
+   самодельный seccomp; `domain`/`token` пока не используются. Осмысленный
+   набор доменов — следующий шаг.
+5. **G.5** Unix DAC `rwx` поверх grants: `Inode.uid/gid/mode`, `perm::allowed`,
+   `access(21)` и `chmod(90)`; root обходит DAC, но не grants. Готово, см.
+   `md/syscalls.md`. Проверка: `spawn p` на режимах `0644/0666/0755`.
+6. **G.6** Далее по вкусу: guard page под user-стеком, ASLR (рандомный
    сдвиг базы стека/кучи), stack canary в ядре.
 
 ## Трек I — Unix-семантика процессов (М3)
@@ -171,6 +180,10 @@ unknown syscall → реализовал → дальше». Это самый �
 - **E.1 Serial COM1** (~50 строк, порт 0x3F8): boot-лог, паники, «unknown
   syscall» — всё в UART. Железо: USB-TTL кабель; QEMU: `-serial stdio`.
   **Сделать первым из всего плана** — удешевляет каждую следующую отладку.
+  **Сделано (2026-10-29):** `src/serial.rs` — TX-only, 115200 8N1, опрос LSR
+  с таймаутом, `sprint!`/`sprintln!`; `bootlog!` дублирует вехи загрузки,
+  паника и `unknown syscall N` пишутся в UART. Проверено headless-запуском
+  QEMU. Детали — [`serial.md`](serial.md).
 - **E.2** Скролл консоли: memmove пиксельных строк вместо очистки экрана.
 - **E.3** Панике — backtrace: пройти по цепочке RBP (собираем с
   force-frame-pointers), печатать адреса; символы смотреть в `nm` на хосте.

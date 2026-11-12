@@ -13,6 +13,7 @@
 10. [Планировщик](#10-планировщик)
 11. [Syscall](#11-syscall)
 12. [Поток выполнения от старта до userspace](#12-поток-выполнения)
+13. [Serial — COM1](#13-serial--com1)
 
 ---
 
@@ -182,22 +183,37 @@ let ptr = &pml4 as *const _ as *mut vmm::PageTable;
 
 **Файл:** `src/heap.rs`
 
-Простой bump-allocator. Выделяет память линейно — только вперёд, освобождения нет.
+Free-list аллокатор (first-fit) с рабочим `dealloc`. Свободные блоки
+образуют односвязный список, заголовок `FreeNode { size, next }` лежит в
+начале самого свободного блока — отдельных метаданных нет.
 
 ```
-HEAP.start ──→ [занято][занято][занято]...[свободно...]  ←── HEAP.end
-                                           ↑
-                                        HEAP.next
+head ──→ [size|next]────→ [size|next]──→ ...
+          свободный блок    свободный блок
+занятые блоки в список не входят: их заголовок перезаписывается данными
 ```
 
 Инициализация в `kernel_main`:
+
 ```rust
-let heap_phys = pmm::alloc();
-let heap_virt = heap_phys + KERNEL_VIRT;
-HEAP.init(heap_virt, 4096 * 16);  // 64 KB
+let heap_start = pmm::alloc_pages(256);   // 256 страниц = 1 MB
+heap::HEAP.init(heap_start, 256 * 4096);
+heap::self_test();                        // alloc/free/alloc при загрузке
 ```
 
-**Текущий статус:** heap выделен, но пока нигде не используется (процессы используют pmm::alloc напрямую).
+Особенности:
+
+- `alloc` — first-fit: первый блок, куда влезает `Layout` с учётом выравнивания;
+- `dealloc` возвращает блок в голову списка;
+- **коалесценции нет**: соседние свободные блоки не сливаются, поэтому
+  длинная серия alloc/free фрагментирует кучу (отложено в `plan-fs.md`, этап 4);
+- лок гасит прерывания (`cli`/`sti` вокруг критической секции) — кучу можно
+  трогать и из обработчиков;
+- `self_test()` при загрузке печатает `HEAP ok` только если alloc/dealloc
+  действительно работают.
+
+Куча используется ramfs (`Arc<Inode>`, `String`, `Vec<u8>`) и структурами
+процессов; страницы под неё выделяются PMM один раз и навсегда.
 
 ---
 
@@ -252,12 +268,13 @@ idt::init()
         iretq                        ← возврат в тот же процесс
 
     else (context switch):
-      rbx = rax (→ Context нового процесса)
-      rsp = Context.kernel_stack         ← переключаемся на стек нового процесса
-      строим iretq-фрейм: ss, rsp, rflags, cs, rip  ← всё из Context
-      восстанавливаем регистры из Context
-      iretq                              ← прыжок в новый процесс
+      rdi = rax (→ Context нового процесса)
+      jmp resume_context                 ← switch.s: единый путь в ring-3
 ```
+
+`resume_context` — единственное место, где строится iretq-фрейм и
+восстанавливаются регистры. Им пользуются таймер, `syscall_reschedule`
+(yield) и первый запуск процесса.
 
 ---
 
@@ -296,7 +313,7 @@ Process {
     pid, syscall_mask, domain, token,
     state: ProcessState,      // Running / Blocked / Dead
     kernel_stack: u64,        // вершина ядерного стека (для TSS.rsp0)
-    user_stack: u64,          // вершина пользовательского стека
+    user_regions: [(u64, u64); 2],  // код и стек — проверка user-указателей
     context: Context,         // сохранённые регистры
 }
 ```
@@ -318,7 +335,7 @@ Process {
 0xA8  kernel_stack
 ```
 
-### Process::new(pid, syscall_mask, domain, entry, grants)
+### Process::new(pid, syscall_mask, domain, entry, grants, uid, gid)
 
 ```
 1. pmm::alloc() → kernel_stack страница (физ.)
@@ -334,7 +351,8 @@ Process {
 10. Context.cs    = 0x23   (user code, DPL=3)
 11. Context.ss    = 0x1B   (user data, DPL=3)
 12. Context.cr3   = текущий CR3
-13. fds = [None; 3] (0/1/2 — консоль), grants — из аргумента
+13. fds = [None; 3] (0/1/2 — консоль), grants — из аргумента,
+    uid/gid — субъект для DAC-проверок (демо-процессы: 1000/1000)
 ```
 
 ---
@@ -368,19 +386,14 @@ SCHEDULER: Scheduler {
 ```
 
 Если возвращён null — `timer.s` просто восстанавливает регистры и делает iretq в тот же процесс.
-Если возвращён Context — `timer.s` переключается на новый процесс через iretq.
+Если возвращён Context — `timer.s` прыгает в `resume_context` (switch.s),
+который строит iretq-фрейм из `Context` и уходит в ring-3.
 
 ### start_first_process_ring3
 
-Запускает первый процесс в ring-3 через `iretq`:
-```asm
-push 0x1B           // SS  (user data, DPL=3)
-push user_rsp       // RSP пользователя
-push 0x202          // RFLAGS (IF=1)
-push 0x23           // CS  (user code, DPL=3)
-push context.rip    // RIP нового процесса
-iretq               // → ring-3
-```
+Запускает первый процесс тем же путём, что и остальные переключения:
+выставляет `TSS.rsp0` и вызывает `resume_context(&proc.context)`. Отдельного
+iretq-фрейма больше нет — все возвраты в ring-3 идут через `switch.s`.
 
 > **Примечание AMD:** после `sysretq` SS.RPL может не выставляться как 3.
 > В `timer.s` применяется фикс: `or WORD PTR [rsp+32], 3` перед `iretq` в `.restore:` —
@@ -419,10 +432,20 @@ syscall_entry:
        Linux ABI:  rax=nr, rdi, rsi, rdx, r10, r8
        C ABI:      rdi=nr, rsi, rdx, rcx, r8,  r9
   6. call syscall_handler
-  7. pop r15-r12, rbp, rbx
-  8. pop rcx (user RIP), r11 (user RFLAGS), rsp (user RSP)
-  9. sysretq → ring-3
+  7. if RESCHED_PENDING:            ← yield попросил переключение
+       syscall_reschedule(rsp)      ← сохранить user-фрейм и уйти в ring-3
+                                    ← назад не возвращается (resume_context)
+  8. pop r15-r12, rbp, rbx
+  9. pop rcx (user RIP), r11 (user RFLAGS), rsp (user RSP)
+ 10. sysretq → ring-3
 ```
+
+`yield` не переключается внутри обработчика: там уже нет user `rip`/`rsp`,
+а syscall-стек один на всех. Флаг `RESCHED_PENDING` проверяется в
+`syscall_entry.s`, пока user-фрейм цел. `syscall_reschedule` сохраняет
+callee-saved и user-контекст в `Context` и вызывает `resume_context`.
+Syscall-стек бросается — процесс продолжает с адреса после `syscall`, а не
+внутри ядра, поэтому восстанавливать его не нужно.
 
 ### Таблица системных вызовов
 
@@ -457,7 +480,7 @@ GRUB → start32 → start64 → start64_high → kernel_main
   ├── LAPIC::enable, IO APIC redirect, sti
   ├── Process::new(process_a) → SCHEDULER.add_process
   ├── kprint!("Scheduler ok")
-  └── start_first_process_ring3 → iretq → process_a в ring-3
+  └── start_first_process_ring3 → resume_context → iretq → process_a в ring-3
 ```
 
 > `SCHEDULER_READY` пока = false → таймер не переключает процессы, только делает EOI.
@@ -477,3 +500,27 @@ process_a (ring-3, naked fn):
     → timer_do_switch (SCHEDULER_READY=false → EOI, return null)
     → .restore: fix SS.RPL, iretq обратно в process_a
 ```
+
+---
+
+## 13. Serial — COM1
+
+**Файл:** `src/serial.rs`, подробно — [`serial.md`](serial.md)
+
+Второй, независимый от framebuffer канал вывода: 16550 UART на `0x3F8`,
+115200 8N1, только TX, опрос `LSR.THRE` с таймаутом.
+
+```
+kernel_main
+  ├── serial::init()                    ← раньше всего остального
+  ├── bootlog!("PMM ok\n")              ← kprint! + sprint! (экран + UART)
+  ├── panic → serial::try_print         ← неблокирующий, чтобы не встать в дедлок
+  └── unknown syscall N → sprintln!
+```
+
+`bootlog!` используется только в загрузке: `sprint!` берёт спинлок порта, а
+из обработчика прерываний это грозило бы дедлоком на прерванном писателе.
+Поэтому в `timer_do_switch` остаётся консольный `kprint!`.
+
+Проверка — `./run.sh` (`-serial stdio`) или headless-запуск QEMU с
+`-serial file:...`; ожидаемый лог и ограничения — в `md/serial.md`.

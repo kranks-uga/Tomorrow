@@ -1,6 +1,9 @@
 .intel_syntax noprefix
 .global syscall_entry
 
+.extern syscall_reschedule
+.extern RESCHED_PENDING
+
 # Временное хранение RSP пользователя (не SMP-safe — пока норм)
 .bss
 .align 8
@@ -44,6 +47,20 @@ syscall_entry:
     call syscall_handler
     # rax = возвращаемое значение (для пользователя)
 
+    # Отложенный reschedule (yield). Внутри обработчика переключаться нельзя:
+    # там нет user RIP/RSP, а syscall-стек общий на все процессы. Здесь
+    # user-фрейм ещё цел, поэтому syscall_reschedule сохраняет его в Context
+    # текущего процесса и уходит в ring-3 через resume_context. Назад она
+    # не возвращается: продолжение — user RIP, а не код ядра, так что
+    # бросить syscall-стек безопасно.
+    cmp byte ptr [rip + RESCHED_PENDING], 0
+    je .return_to_user
+    mov byte ptr [rip + RESCHED_PENDING], 0
+    mov rdi, rsp            # rdi → сохранённые r15..rbx, user RIP/RFLAGS/RSP
+    call syscall_reschedule
+    ud2                     # syscall_reschedule помечена -> !; сюда не приходим
+
+.return_to_user:
     # 5. Восстанавливаем callee-saved
     pop r15
     pop r14

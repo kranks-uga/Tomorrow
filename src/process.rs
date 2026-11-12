@@ -14,13 +14,14 @@ use alloc::vec::Vec;
 /// короче 4 КБ, но могут начинаться у конца страницы → нужно две.
 const CODE_PAGES: u64 = 2;
 
-// Права rw
-pub const PERM_READ: u8 = 1 << 0;
-pub const PERM_WRITE: u8 = 1 << 1;
+// Права rwx
+pub const PERM_EXEC: u16 = crate::perm::X; // 1
+pub const PERM_WRITE: u16 = crate::perm::W; // 2
+pub const PERM_READ: u16 = crate::perm::R; // 4
 
 pub struct Grant {
     pub name: String,
-    pub perms: u8,
+    pub perms: u16,
 }
 
 #[derive(PartialEq)]
@@ -32,16 +33,17 @@ pub enum ProcessState {
 
 pub struct Process {
     pub pid: u64,
-    pub syscall_mask: u64,
+    pub syscall_mask: u128,
     pub domain: u8,
     pub token: u64,
+    pub uid: u32,
+    pub gid: u32,
     pub state: ProcessState,
     pub kernel_stack: u64,
-    pub user_stack: u64,
     pub user_regions: [(u64, u64); 2],
     // Базовые ФИЗИЧЕСКИЕ адреса страниц от pmm::alloc — нужны, чтобы reap()
-    // мог вернуть их в PMM. kernel_stack/user_stack — это вершины (virt),
-    // освобождать по ним нельзя.
+    // мог вернуть их в PMM. kernel_stack — это вершина (virt), освобождать
+    // по ней нельзя.
     pub kernel_stack_phys: u64,
     pub user_stack_phys: u64,
     pub context: Context,
@@ -50,13 +52,21 @@ pub struct Process {
 }
 
 pub struct OpenFile {
-    pub perms: u8,
+    pub perms: u16,
     pub inode: Arc<Inode>,
     pub offset: usize,
 }
 
 impl Process {
-    pub fn new(pid: u64, syscall_mask: u64, domain: u8, entry: u64, grants: Vec<Grant>) -> Self {
+    pub fn new(
+        pid: u64,
+        syscall_mask: u128,
+        domain: u8,
+        entry: u64,
+        grants: Vec<Grant>,
+        uid: u32,
+        gid: u32,
+    ) -> Self {
         let stack = unsafe { pmm::alloc() };
         let user_stack_phys = unsafe { pmm::alloc() };
 
@@ -67,13 +77,7 @@ impl Process {
         // (TSS-стек в main.rs тоже физический — здесь приводим к тому же инварианту.)
         let stack_top = (stack + 4096) & !0xF;
 
-        // кладём entry point на вершину kernel stack
-        unsafe {
-            let stack_ptr = (stack_top - 8) as *mut u64;
-            *stack_ptr = entry;
-        }
-
-        // маппим user stack с флагом USER
+        // user stack маппим с флагом USER
         // user stack — за пределами identity-map (0-1TB покрыта large pages)
         // pml4[2] пустой → vmm::map создаст нормальные 4KB таблицы
         //
@@ -127,9 +131,10 @@ impl Process {
             syscall_mask,
             domain,
             token: 0,
+            uid,
+            gid,
             state: ProcessState::Running,
             kernel_stack: stack_top,
-            user_stack: user_stack_top,
             kernel_stack_phys: stack,
             user_regions: [
                 (user_code_virt, user_code_virt + CODE_PAGES * PAGE_SIZE),

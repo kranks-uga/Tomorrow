@@ -14,7 +14,7 @@ GRUB как multiboot2-модуль (tar-архив `initrd.tar`), разбир�
 > файлов без диска. Так устроены и ramfs/tmpfs в Linux (`/tmp`, `/dev/shm`):
 > файлы только в памяти, после перезагрузки пропадают.
 
-Syscall'ы, права на файлы (grants) и errno описаны в
+Syscall'ы, права на файлы (grants + Unix DAC) и errno описаны в
 [syscalls.md](syscalls.md); здесь — сама ФС.
 
 ---
@@ -33,8 +33,8 @@ Syscall'ы, права на файлы (grants) и errno описаны в
         │ Arc<Inode>
         ▼
  ┌──────────────────────────────────────────────────────┐
- │ Inode { data: Mutex<Vec<u8>> }                       │
- │   read_at / write_at                                 │
+ │ Inode { data: Mutex<Vec<u8>>, uid, gid, mode }       │
+ │   read_at / write_at / set_mode / set_owner          │
  └──────────────────────────────────────────────────────┘
         │
         ▼
@@ -44,7 +44,7 @@ Syscall'ы, права на файлы (grants) и errno описаны в
 | Слой | Что делает | Где |
 |---|---|---|
 | Пространство имён | имя → inode | `ROOT`, `lookup`/`create`/`delete` |
-| Inode | хранит байты, читает/пишет по смещению | `Inode::read_at` / `write_at` |
+| Inode | байты, владелец и режим `rwx` | `Inode::read_at` / `write_at` / `mode` |
 | Хранилище | где физически лежат байты | `Vec<u8>` в heap |
 
 Имя используется **только чтобы найти inode** (`open`, команды шелла).
@@ -92,6 +92,9 @@ Syscall'ы, права на файлы (grants) и errno описаны в
 | Смещение | Размер | Поле | Как читаем |
 |----------|--------|------|-----------|
 | `0` | 100 | `name` (ASCII, NUL-terminated, если короче 100) | до первого `0` или 100 байт → `String` |
+| `100` | 8 | `mode` (**восьмеричное** ASCII, `0000644`) | `parse_octal(base, off+100, 8)`, маска `0o777` |
+| `108` | 8 | `uid` (восьмеричный) | пока не читается → `0` |
+| `116` | 8 | `gid` (восьмеричный) | пока не читается → `0` |
 | `124` | 12 | `size` (**восьмеричное** ASCII) | `parse_octal(base, off+124, 12)` |
 | `512` | — | начало данных файла | `base + off + 512` |
 
@@ -114,6 +117,9 @@ off += 512 + ((size + 511) & !511);   // заголовок + данные, ок
 ```rust
 pub struct Inode {
     pub data: Mutex<Vec<u8>>,     // содержимое файла
+    uid: AtomicU32,               // владелец
+    gid: AtomicU32,               // группа
+    mode: AtomicU16,              // rwxrwxrwx (9 младших бит)
 }
 
 struct DirEntry {
@@ -132,7 +138,10 @@ pub const MAX_FILE_SIZE: usize = 64 * 1024;
   счётчик падает до нуля.
 - **Два уровня локов.** `ROOT` защищает список имён, `Inode.data` — байты
   конкретного файла. Чтение одного файла не блокирует каталог.
-- **`MAX_PATH`** общий для ФС и syscall'ов: `sys_open` копирует имя в буфер
+- **Метаданные — атомики, а не `Mutex`.** `uid/gid/mode` читаются часто
+  (`open`, `ls`, `access`) и меняются редко; `AtomicU32`/`AtomicU16`
+  позволяют не брать второй лок. `set_mode` маскирует режим `MODE_MASK`.
+- **`MAX_PATH`** общий для ФС и syscall'ов: `user_path` копирует имя в буфер
   `[u8; MAX_PATH]`.
 
 ---
@@ -145,6 +154,9 @@ pub const MAX_FILE_SIZE: usize = 64 * 1024;
 |---|---|---|
 | `read_at(offset, dst)` | копирует в `dst` с позиции `offset` | число байт; меньше `dst.len()` у конца, `0` за концом |
 | `write_at(offset, src)` | пишет с `offset`: перезаписывает, при выходе за конец растит файл (дыра — нули) | `Some(новый конец)` или `None`, если превышен `MAX_FILE_SIZE` (тогда ничего не пишется) |
+| `uid()` / `gid()` / `mode()` | читают метаданные | `u32` / `u32` / `u16` |
+| `set_mode(mode)` | меняет `rwx`-режим (лишние биты отбрасываются) | — |
+| `set_owner(uid, gid)` | меняет владельца и группу | — |
 
 `write_at` обрабатывает все случаи одной схемой `resize` + `copy_from_slice`:
 запись внутри файла, через конец и за концом (с дырой из нулей, как в Unix).
@@ -155,10 +167,12 @@ pub const MAX_FILE_SIZE: usize = 64 * 1024;
 |---------|-----------|---------|
 | `init()` | парсит tar по `MOD_START`, наполняет `ROOT` | — |
 | `lookup(name)` | ищет запись, **клонирует `Arc`** и отпускает `ROOT` | `Option<Arc<Inode>>` |
-| `list(cb)` | вызывает `cb(имя, размер)` для каждого файла | — |
-| `create(name)` | создаёт пустой файл; отказ, если имя занято | `true`, если создан |
+| `list(cb)` | вызывает `cb(имя, размер, uid, gid, mode)` для каждого файла | — |
+| `create(name, uid, gid, mode)` | создаёт пустой файл с метаданными; отказ, если имя занято | `true`, если создан |
 | `delete(name)` | убирает запись из `ROOT` | `true`, если удалён |
 | `write(name, data)` | **заменяет** содержимое целиком (для шелла) | `true`, если найден |
+| `set_mode(name, mode)` | меняет режим файла (для `chmod` шелла) | `true`, если найден |
+| `set_owner(name, uid, gid)` | меняет владельца (для `chown` шелла) | `true`, если найден |
 
 ---
 
@@ -211,22 +225,30 @@ IF на входе в syscall, и пока ядро обрабатывает sys
 | Команда | Вызывает | Делает |
 |---------|---------|--------|
 | `ls` | `ramfs::list` | печатает `имя размер` построчно |
+| `ls -l` | `ramfs::list` | печатает `-rwx… uid gid размер имя` |
 | `cat <file>` | `ramfs::lookup` | печатает содержимое (под локом `data`) |
 | `write <file> <text>` | `ramfs::write` | заменяет содержимое целиком |
-| `touch <name>` | `ramfs::create` | создаёт пустой файл |
+| `touch <name>` | `ramfs::create` | создаёт пустой файл `root:root 0644` |
 | `rm <name>` | `ramfs::delete` | удаляет имя |
+| `chmod <octal> <file>` | `ramfs::set_mode` | меняет `rwx`-режим |
+| `chown <uid> <gid> <file>` | `ramfs::set_owner` | меняет владельца |
 
 ```
+> ls -l
+-rw-r--r-- 0 0 18 hello.txt
+-rw-r--r-- 0 0 12 readme.txt
 > touch note.txt
 file created
 > write note.txt hello world
 written to file
 > cat note.txt
 hello world
-> ls
-hello.txt 18
-readme.txt 12
-note.txt 11
+> chmod 640 note.txt
+mode changed
+> chown 1000 1000 note.txt
+owner changed
+> ls -l
+-rw-r----- 1000 1000 11 note.txt
 > rm note.txt
 file deleted
 ```
@@ -236,8 +258,9 @@ file deleted
 ## 9. Ограничения
 
 1. **Нет каталогов.** Список плоский; `/` внутри имени — просто символ.
-2. **Нет метаданных.** uid/gid/mode/mtime из tar не читаются. Права — не
-   атрибут файла, а список grants у процесса (см. [syscalls.md](syscalls.md)).
+2. **Метаданные неполные.** Режим (`mode`) читается из tar; `uid`/`gid`
+   всегда `0:0`, `mtime` нет. Права проверяются двумя слоями: grants у
+   процесса и DAC на inode (см. [syscalls.md, раздел 5](syscalls.md#5-модель-прав-на-файлы)).
 3. **Лимит размера — на файл, не на ФС.** `MAX_FILE_SIZE` = 64 КБ для
    `write_at`, но 16 файлов по 64 КБ исчерпают кучу (1 МБ). `ramfs::write`
    из шелла и `create` лимитов не проверяют.
@@ -261,7 +284,10 @@ file deleted
 | `ramfs.rs` | `Inode::read_at` / `write_at` | чтение/запись байтов файла |
 | `ramfs.rs` | `lookup` / `list` | поиск и перечисление |
 | `ramfs.rs` | `create` / `delete` / `write` | изменение каталога и содержимого (шелл) |
+| `ramfs.rs` | `set_mode` / `set_owner` | метаданные для `chmod`/`chown` |
 | `syscall.rs` | `sys_open` / `sys_read` / `sys_write` / `sys_close` | доступ процессов через fd |
+| `syscall.rs` | `sys_access` / `sys_chmod` | проверка DAC и смена режима из процесса |
+| `perm.rs` | `allowed` | выбор класса owner/group/other |
 | `process.rs` | `OpenFile`, `Process::fds`, `Grant` | fd-таблица и права процесса |
-| `shell.rs` | `cmd_ls/cat/write/create/rm` | команды пользователя |
-| `shell.rs` | `parse_octal` | восьмеричный размер из tar-заголовка |
+| `shell.rs` | `cmd_ls/cat/write/create/rm/chmod/chown` | команды пользователя |
+| `shell.rs` | `parse_octal` | восьмеричные размер и режим из tar |

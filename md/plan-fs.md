@@ -133,7 +133,8 @@ pub fds: Vec<Option<OpenFile>>,   // индекс = fd
 или отрицательные как в Linux; выбрать одну конвенцию и записать в md/).
 
 **Решено:** `-errno` как в Linux; сигнатура стала
-`open(path_ptr, path_len, flags)` с проверкой grants. Таблица errno,
+`open(path_ptr, path_len, flags)` с проверкой grants **и** Unix DAC
+(`uid/gid/mode`). Добавлены `access(21)` и `chmod(90)`. Таблица errno,
 флаги и модель прав — в [syscalls.md](syscalls.md).
 
 ### 3.3 `sys_read` / `sys_write` по fd

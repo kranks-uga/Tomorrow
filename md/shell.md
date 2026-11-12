@@ -108,13 +108,19 @@
 | `echo <text>` | — | печать аргументов |
 | `ticks` | — | счётчик тиков таймера |
 | `ps` | — | список процессов |
-| `spawn <a\|b>` | — | создать демо-процесс |
+| `spawn <a\|b\|f\|w\|x\|r\|y\|p>` | `cmd_spawn` | демо-процессы; `p` — матрица DAC `rwx` |
 | `kill <pid>` | — | завершить процесс |
 | `mem` | — | свободная физ. память (PMM) |
 | `reboot` | — | перезагрузка |
 | `shutdown` / `poweroff` | `cmd_shutdown` | ACPI S5 (запись в PM1x_CNT) |
 | `module` | `mods` | `MOD_START` / `MOD_END` |
-| `ls` / `cat` / `write` / `touch` / `rm` | `cmd_*` | файловая система (см. `ramfs.md`) |
+| `ls [-l]` | `cmd_ls` | файлы; `-l` — режим, uid, gid, размер |
+| `chmod <octal> <file>` | `cmd_chmod` | сменить `rwx` (например `chmod 640 hello.txt`) |
+| `chown <uid> <gid> <file>` | `cmd_chown` | сменить владельца |
+| `cat` / `write` / `touch` / `rm` | `cmd_*` | файловая система (см. `ramfs.md`) |
+
+Демо-процессы создаются с `uid=1000, gid=1000`; шелл — доверенный root.
+Модель прав — в [syscalls.md, раздел 5](syscalls.md#5-модель-прав-на-файлы).
 
 Неизвестная команда → `unknown command: <cmd>`.
 

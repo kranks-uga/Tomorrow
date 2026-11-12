@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use crate::console::Console;
-use crate::process::{Grant, Process, ProcessState, PERM_READ, PERM_WRITE};
+use crate::process::{Grant, Process, ProcessState, PERM_EXEC, PERM_READ, PERM_WRITE};
 use crate::{pmm, scheduler, CONSOLE, TICKS};
 use alloc::string::String;
 use alloc::vec;
@@ -27,6 +27,7 @@ pub fn init() {
         LEN = 0;
         READY = true;
     }
+    crate::console::enable_serial_mirror();
     console().write_str("\nType 'help' for a list of commands.\n");
     prompt();
 }
@@ -144,7 +145,11 @@ fn execute() {
     } else if eq(cmd, b"module") {
         mods();
     } else if eq(cmd, b"ls") {
-        cmd_ls();
+        cmd_ls(args);
+    } else if eq(cmd, b"chmod") {
+        cmd_chmod(args);
+    } else if eq(cmd, b"chown") {
+        cmd_chown(args);
     } else if eq(cmd, b"cat") {
         cmd_cat(args);
     } else if eq(cmd, b"write") {
@@ -168,13 +173,15 @@ fn cmd_help() {
          \x20 echo <text>   print text\n\
          \x20 ticks         show timer tick count\n\
          \x20 ps            list processes\n\
-         \x20 spawn <a|b|f|w|x|r> create a new demo process (a, b, f, w, x or r)\n\
+         \x20 spawn <a|b|f|w|x|r|y|p> create a demo process (p = права rwx)\n\
          \x20 kill <pid>    terminate a process by pid\n\
          \x20 mem           show free physical memory\n\
          \x20 reboot        restart the machine\n\
          \x20 shutdown / poweroff      power off via ACPI\n\
          \x20 module         read mod_start and mod_end \n\
-         \x20 ls             show files\n\
+         \x20 ls [-l]        show files (-l: mode, uid, gid, size)\n\
+         \x20 chmod <octal> <file>   change rwx mode (e.g. chmod 640 hello.txt)\n\
+         \x20 chown <uid> <gid> <file> change owner\n\
          \x20 cat <file>     print file contents\n\
          \x20 write <file> <text> write to file\n\
          \x20 touch <name file> creates a file\n\
@@ -294,8 +301,18 @@ fn cmd_spawn(args: &[u8]) {
                 perms: PERM_READ,
             }],
         )
+    } else if eq(args, b"y") {
+        (crate::process_y as *const () as u64, Vec::new())
+    } else if eq(args, b"p") {
+        (
+            crate::process_p as *const () as u64,
+            vec![Grant {
+                name: String::from("hello.txt"),
+                perms: PERM_READ | PERM_WRITE | PERM_EXEC,
+            }],
+        )
     } else {
-        console().write_str("usage: spawn <a|b|f|w|x|r>\n");
+        console().write_str("usage: spawn <a|b|f|w|x|r|y|p>\n");
         return;
     };
 
@@ -308,7 +325,15 @@ fn cmd_spawn(args: &[u8]) {
     }
 
     let pid = unsafe { scheduler::next_pid() };
-    let proc = Process::new(pid, crate::syscall::SYSCALL_MASK, 0, entry, grants);
+    let proc = Process::new(
+        pid,
+        crate::syscall::SYSCALL_MASK,
+        0,
+        entry,
+        grants,
+        1000,
+        1000,
+    );
     sched.add_process(proc);
 
     console().write_str("spawned pid ");
@@ -377,6 +402,21 @@ fn parse_dec(s: &[u8]) -> Option<u64> {
     Some(n)
 }
 
+/// Парсит восьмеричный режим для `chmod` (`640` → 0o640).
+fn parse_octal_str(s: &[u8]) -> Option<u64> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut n: u64 = 0;
+    for &c in s {
+        if !(b'0'..=b'7').contains(&c) {
+            return None;
+        }
+        n = n.checked_mul(8)?.checked_add((c - b'0') as u64)?;
+    }
+    Some(n)
+}
+
 fn cmd_mem() {
     let free = pmm::free_pages();
     console().write_str("free pages: ");
@@ -441,13 +481,72 @@ fn cmd_reboot() {
     }
 }
 
-fn cmd_ls() {
-    crate::ramfs::list(|name, size| {
+fn cmd_ls(args: &[u8]) {
+    let long = eq(args, b"-l");
+    crate::ramfs::list(|name, size, uid, gid, mode| {
+        if long {
+            console().write_byte(b'-');
+            let mode = crate::perm::mode_string(mode);
+            write_bytes(&mode);
+            console().write_str(" ");
+            console().write_dec(uid as u64);
+            console().write_str(" ");
+            console().write_dec(gid as u64);
+            console().write_str(" ");
+            console().write_dec(size as u64);
+            console().write_str(" ");
+        }
         write_bytes(name);
-        console().write_str(" ");
-        console().write_dec(size as u64);
         console().write_str("\n");
     });
+}
+
+fn cmd_chmod(args: &[u8]) {
+    let (mode_s, rest) = split_first_word(args);
+    let (name, _) = split_first_word(rest);
+    if mode_s.is_empty() || name.is_empty() {
+        console().write_str("usage: chmod <octal> <file>\n");
+        return;
+    }
+
+    let Some(mode) = parse_octal_str(mode_s) else {
+        console().write_str("bad mode: expected octal, e.g. 640\n");
+        return;
+    };
+    if mode > 0o777 {
+        console().write_str("mode must be 0..0777\n");
+        return;
+    }
+
+    if crate::ramfs::set_mode(name, mode as u16) {
+        console().write_str("mode changed\n");
+    } else {
+        console().write_str("file not found\n");
+    }
+}
+
+fn cmd_chown(args: &[u8]) {
+    let (uid_s, rest) = split_first_word(args);
+    let (gid_s, rest) = split_first_word(rest);
+    let (name, _) = split_first_word(rest);
+    if uid_s.is_empty() || gid_s.is_empty() || name.is_empty() {
+        console().write_str("usage: chown <uid> <gid> <file>\n");
+        return;
+    }
+
+    let (uid, gid) = match (parse_dec(uid_s), parse_dec(gid_s)) {
+        (Some(u), Some(g)) => (u, g),
+        _ => {
+            console().write_str("bad uid/gid\n");
+            return;
+        }
+    };
+
+    if crate::ramfs::set_owner(name, uid as u32, gid as u32) {
+        console().write_str("owner changed\n");
+    } else {
+        console().write_str("file not found\n");
+    }
 }
 
 fn cmd_cat(args: &[u8]) {
@@ -485,7 +584,7 @@ fn cmd_create(args: &[u8]) {
     }
 
     let (name, _) = split_first_word(args);
-    if crate::ramfs::create(name) {
+    if crate::ramfs::create(name, 0, 0, 0o644) {
         console().write_str("file created\n");
     } else {
         console().write_str("file not created\n");

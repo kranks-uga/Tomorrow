@@ -72,7 +72,10 @@ System call numbers match Linux x86-64. The goal is to run existing Linux binari
 | initrd — modules loaded by GRUB | done |
 | RAM FS (ramfs) — `Arc`-based inodes, file creation and writing | done |
 | File syscalls — per-process fd table, open/read/close | done |
+| Unix DAC `rwx` (`uid/gid/mode`) on top of capability grants | done |
+| `access` / `chmod`, `ls -l`, shell `chmod` / `chown` | done |
 | ACPI shutdown / reboot | done |
+| Serial COM1 — boot log, panics and console mirror over UART | done |
 
 ### Shell commands
 
@@ -83,11 +86,13 @@ System call numbers match Linux x86-64. The goal is to run existing Linux binari
 | `echo <text>` | print text |
 | `ticks` | show the timer tick counter |
 | `ps` | list processes |
-| `spawn <a\|b\|f>` | start a demo process (`f` reads `hello.txt` via syscalls) |
+| `spawn <a\|b\|f\|w\|x\|r\|y\|p>` | demo process (`f`/`w` read/write `hello.txt`, `x` checks grants, `p` shows the DAC `rwx` matrix, `r` tests unlink, `y` tests yield) |
 | `kill <pid>` | terminate a process |
 | `mem` | memory statistics |
 | `module` | show loaded modules |
-| `ls` | list RAM FS contents |
+| `ls [-l]` | list RAM FS contents; `-l` adds mode, uid, gid, size |
+| `chmod <octal> <file>` | change the `rwx` mode (e.g. `chmod 666 hello.txt`) |
+| `chown <uid> <gid> <file>` | change the owner |
 | `cat <file>` | print a file |
 | `write <file> <data>` | write data to a file |
 | `touch <file>` | create an empty file |
@@ -101,13 +106,17 @@ System call numbers match Linux x86-64. The goal is to run existing Linux binari
 |---|------|-------------------------|
 | 0 | `SYS_READ` | fd, buf, len — read from a file, 0 = end of file |
 | 1 | `SYS_WRITE` | fd, buf, len — fd 1 = console |
-| 2 | `SYS_OPEN` | path, len — open a ramfs file, returns an fd |
+| 2 | `SYS_OPEN` | path, len, flags — open a ramfs file, returns an fd |
 | 3 | `SYS_CLOSE` | fd — close a file |
+| 21 | `SYS_ACCESS` | path, len, mode — check `R/W/X/F_OK` without opening |
 | 24 | `SYS_YIELD` | yield the CPU |
 | 60 | `SYS_EXIT` | terminate the process |
+| 90 | `SYS_CHMOD` | path, len, mode — change `rwx` (owner or root) |
 
-Errors are returned Linux-style as a negative `-errno` (`EBADF`, `ENOENT`, `EFAULT`, …).
+Errors are returned Linux-style as a negative `-errno` (`EACCES`, `EPERM`, `EBADF`, `ENOENT`, `EFAULT`, …).
 Each process may only use the syscalls allowed by its mask (`syscall_mask`).
+File access requires **two** permissions: a per-process grant and the Unix
+DAC `rwx` on the inode; see [`md/syscalls.md`](md/syscalls.md).
 
 ---
 
@@ -190,11 +199,12 @@ src/
   hpet.rs          — HPET timer
   tss.rs           — TSS + GDT
   process.rs       — process and context structures, fd table
+  perm.rs          — Unix DAC: rwx check, owner/group/other
   scheduler.rs     — round-robin scheduler
-  syscall.rs       — system call handlers
+  syscall.rs       — system call handlers (open/access/chmod)
   syscall_entry.s  — SYSCALL entry/exit (MSR)
   timer.s          — timer interrupt handler, context switch
-  switch.s         — context_switch (in-kernel switch)
+  switch.s         — resume_context (single ring-3 return path)
   keyboard.rs      — PS/2 keyboard
   keyboard.s       — keyboard ISR
   console.rs       — framebuffer console + line discipline
@@ -202,6 +212,7 @@ src/
   pci.rs           — finds xHCI via MCFG/PCIe
   xhci.rs          — xHCI USB controller and HID keyboard
   shell.rs         — interactive shell
+  serial.rs        — COM1 (16550 UART): boot log, panics, unknown syscall
   ramfs.rs         — RAM file system
 boot/grub/grub.cfg — bootloader config (kernel + initrd)
 initrd.tar         — initial RAM disk with user modules
@@ -218,9 +229,10 @@ Detailed write-ups of each subsystem live in [`md/`](md/) (currently in Russian)
 |----------|-------|
 | [`architecture.md`](md/architecture.md) | the whole kernel: boot, PMM/VMM/heap, IDT, APIC timer, TSS/GDT, processes, scheduler, syscalls |
 | [`xhci.md`](md/xhci.md) | USB stack: xHCI controller, device enumeration, hubs/TT, HID keyboard |
-| [`ramfs.md`](md/ramfs.md) | file system: initrd (tar) → heap, writable ramfs, `ls/cat/write/touch/rm` commands |
+| [`ramfs.md`](md/ramfs.md) | file system: initrd (tar) → heap, writable ramfs, inode metadata, `ls/cat/write/touch/rm/chmod/chown` commands |
 | [`console.md`](md/console.md) | screen output: framebuffer, PSF2 font rendering, the `Console` API |
 | [`shell.md`](md/shell.md) | input and shell: keyboard (PS/2 + USB), `on_char`, line discipline, command dispatch |
+| [`serial.md`](md/serial.md) | COM1: UART setup, `sprint!`/`sprintln!`, boot log and panics, reading the log |
 
 ---
 
